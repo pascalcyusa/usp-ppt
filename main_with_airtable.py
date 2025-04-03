@@ -50,13 +50,13 @@ AIRTABLE_HEADERS = {
 # --- Field names in your Airtable base (MUST match exactly, case-sensitive) ---
 # Mapping Airtable Columns to Script Variables:
 AIRTABLE_NAME_COLUMN = "Name"          # Airtable column to fetch for 'pancake_id' (OrderID)
-AIRTABLE_NOTES_COLUMN = "Notes"         # Airtable column to fetch for 'toppings' data
-AIRTABLE_STATUS_FIELD = "Status"      # The field storing "Pending", "Started", "Ready"
+AIRTABLE_TOPPINGS_COLUMNS = ["sprinkles", "Whipped Cream", "Chocolate Chips"]  # Columns for toppings
+AIRTABLE_STATUS_FIELD = "Status"       # The field storing "Done", "In Progress", "To do"
 
 # --- Status values expected in the AIRTABLE_STATUS_FIELD ---
-STATUS_PENDING = "Pending"
-STATUS_STARTED = "Started"
-STATUS_READY = "Ready"
+STATUS_PENDING = "To do"
+STATUS_STARTED = "In Progress"
+STATUS_READY = "Done"
 
 # --- Camera Configuration ---
 CAMERA_RESOLUTION = (640, 480) # Width, Height
@@ -311,134 +311,74 @@ class PancakeRobotNode(Node):
 
     # --- Airtable Communication ---
     def fetch_order_from_airtable(self):
-        """Fetches the oldest 'Pending' order from Airtable using configured credentials."""
+        """Fetches the oldest 'To do' order from Airtable using configured credentials."""
         self.get_logger().info("Attempting to fetch order from Airtable...")
-
-        # Check if config seems valid before making the call
-        if "YOUR_" in AIRTABLE_API_TOKEN or "YOUR_" in AIRTABLE_BASE_ID:
-            self.get_logger().error("Airtable fetch failed: Configuration seems incomplete.")
-            return None
 
         params = {
             "maxRecords": 1,
-            # Filter by the status field defined in constants
             "filterByFormula": f"({{{AIRTABLE_STATUS_FIELD}}}='{STATUS_PENDING}')",
-            # Optional: Specify a view to ensure consistent field availability/order
-            # "view": "YourGridViewName",
-            # Optional: Sort by creation time if available to get the oldest
-            # "sort[0][field]": "Created", "sort[0][direction]": "asc"
         }
         order_to_process = None
 
         try:
-            response = requests.get(url=AIRTABLE_URL, headers=AIRTABLE_HEADERS, params=params, timeout=10) # Increased timeout
-            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-
+            response = requests.get(url=AIRTABLE_URL, headers=AIRTABLE_HEADERS, params=params, timeout=10)
+            response.raise_for_status()
             data = response.json()
             records = data.get("records", [])
 
-            if records: # If the filter returned at least one record
-                record = records[0] # Get the first (oldest if sorted)
+            if records:
+                record = records[0]
                 record_id = record.get("id")
                 fields = record.get("fields", {})
 
-                # ===========================================================
-                # ===> Use "Name" and "Notes" column names from config <===
-                # ===========================================================
-                # Extract fields using the constant names defined at the top
-                order_id = fields.get(AIRTABLE_NAME_COLUMN)  # Fetch OrderID from "Name" column
-                toppings_data = fields.get(AIRTABLE_NOTES_COLUMN, "") # Fetch Toppings from "Notes", default to ""
-                # ===========================================================
+                order_id = fields.get(AIRTABLE_NAME_COLUMN)
+                toppings_data = {topping: fields.get(topping, "no") for topping in AIRTABLE_TOPPINGS_COLUMNS}
 
-                # Basic validation
                 if not record_id or not order_id:
-                     # Use the correct constant name in the error message
-                     self.get_logger().error(f"Fetched record missing 'id' ({record_id}) or '{AIRTABLE_NAME_COLUMN}' field ({order_id}). Record data: {record}")
+                    self.get_logger().error(f"Fetched record missing 'id' or '{AIRTABLE_NAME_COLUMN}'. Record data: {record}")
                 else:
-                    # Update log message to reflect where data came from
-                    self.get_logger().info(f"Fetched order: ID (from '{AIRTABLE_NAME_COLUMN}')='{order_id}', RecordID='{record_id}', Toppings (from '{AIRTABLE_NOTES_COLUMN}')='{toppings_data}'")
-                    # Basic parsing for toppings (adjust if needed based on Airtable field type)
-                    toppings_list = []
-                    if isinstance(toppings_data, str) and toppings_data:
-                        # Assuming toppings in "Notes" are comma-separated
-                        toppings_list = [t.strip() for t in toppings_data.split(',')]
-                    elif isinstance(toppings_data, list): # Handle if "Notes" is already a list/multi-select
-                        toppings_list = toppings_data
-
+                    self.get_logger().info(f"Fetched order: ID='{order_id}', RecordID='{record_id}', Toppings={toppings_data}")
                     order_to_process = {
                         "record_id": record_id,
-                        "pancake_id": order_id, # This now holds the value from the "Name" column
-                        "toppings": toppings_list # This now holds data parsed from the "Notes" column
+                        "pancake_id": order_id,
+                        "toppings": [topping for topping, value in toppings_data.items() if value.lower() == "yes"]
                     }
             else:
                 self.get_logger().info(f"No records found with Status='{STATUS_PENDING}'.")
 
-        # --- Keep the existing error handling ---
-        except requests.exceptions.Timeout:
-            self.get_logger().error(f"Airtable request timed out ({AIRTABLE_URL}).")
-        except requests.exceptions.ConnectionError:
-             self.get_logger().error(f"Airtable connection error ({AIRTABLE_URL}). Check network.")
-        except requests.exceptions.HTTPError as http_err:
-             self.get_logger().error(f"Airtable HTTP error: {http_err}") # Includes status code
-             if http_err.response.status_code == 403: self.get_logger().error("--> ACCESS FORBIDDEN (403): Check API Token scopes and Base access permissions.")
-             elif http_err.response.status_code == 404: self.get_logger().error("--> NOT FOUND (404): Check Base ID and Table Name.")
-             elif http_err.response.status_code == 401: self.get_logger().error("--> UNAUTHORIZED (401): Check API Token value.")
         except requests.exceptions.RequestException as req_err:
             self.get_logger().error(f"Airtable request error: {req_err}")
-        except json.JSONDecodeError as json_err:
-            self.get_logger().error(f"Error decoding Airtable JSON response: {json_err}")
         except Exception as e:
-             self.get_logger().error(f"Unexpected error processing Airtable response: {e}")
+            self.get_logger().error(f"Unexpected error processing Airtable response: {e}")
 
-        # Ensure None is returned if anything went wrong
         return order_to_process
-
 
     def update_order_status(self, record_id, new_status):
         """Updates the status of a specific order in Airtable using its record_id."""
         if not record_id:
             self.get_logger().error("Cannot update status: record_id is missing.")
             return False
-        # Check config validity
-        if "YOUR_" in AIRTABLE_API_TOKEN or "YOUR_" in AIRTABLE_BASE_ID:
-            self.get_logger().error("Cannot update status: Airtable configuration incomplete.")
-            return False
 
         self.get_logger().info(f"Updating Airtable record {record_id} status to '{new_status}'...")
-        update_url = f"{AIRTABLE_URL}/{record_id}" # Construct specific record URL
+        update_url = f"{AIRTABLE_URL}/{record_id}"
         payload = json.dumps({
             "fields": {
-                # Update the status field using defined constant name
                 AIRTABLE_STATUS_FIELD: new_status
             }
         })
 
         try:
             response = requests.patch(update_url, headers=AIRTABLE_HEADERS, data=payload, timeout=10)
-            response.raise_for_status() # Check for 4xx/5xx errors
-
+            response.raise_for_status()
             self.get_logger().info(f"Airtable record {record_id} updated successfully to '{new_status}'.")
             return True
 
-        # --- Same error handling as fetch ---
-        except requests.exceptions.Timeout:
-            self.get_logger().error(f"Airtable update request timed out ({update_url}).")
-        except requests.exceptions.ConnectionError:
-             self.get_logger().error(f"Airtable update connection error ({update_url}).")
-        except requests.exceptions.HTTPError as http_err:
-             self.get_logger().error(f"Airtable update HTTP error: {http_err}")
-             if http_err.response.status_code == 403: self.get_logger().error("--> ACCESS FORBIDDEN (403): Check Token scopes (data.records:write) and Base access.")
-             if http_err.response.status_code == 404: self.get_logger().error("--> NOT FOUND (404): Check Record ID, Base ID, Table Name.")
-             if http_err.response.status_code == 401: self.get_logger().error("--> UNAUTHORIZED (401): Check API Token value.")
-             if http_err.response.status_code == 422: self.get_logger().error(f"--> UNPROCESSABLE ENTITY (422): Check field name ('{AIRTABLE_STATUS_FIELD}') and value ('{new_status}'). Response: {http_err.response.text}")
         except requests.exceptions.RequestException as req_err:
             self.get_logger().error(f"Airtable update request error: {req_err}")
-        except json.JSONDecodeError as json_err:
-            self.get_logger().error(f"Error decoding Airtable JSON response during update: {json_err}")
         except Exception as e:
-             self.get_logger().error(f"Unexpected error processing Airtable update for {record_id}: {e}")
+            self.get_logger().error(f"Unexpected error processing Airtable update for {record_id}: {e}")
 
-        return False # Return False if any error occurred
+        return False
 
     # --- Sound Utility ---
     def play_sound(self, notes):

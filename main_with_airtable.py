@@ -49,13 +49,13 @@ CAMERA_RESOLUTION = (640, 480) # Width, Height
 # --- Color Detection Configuration ---
 # Define HSV Lower and Upper bounds for each station's target color
 STATION_COLORS_HSV = {
-    0: {"name": "Order Station", "process_time": 2.0,
+    3: {"name": "Order Station", "process_time": 2.0,
         "hsv_lower": (100, 100, 50), "hsv_upper": (130, 255, 255)}, # Example: Blue (for return)
     1: {"name": "Batter/Cook", "process_time": 5.0,
         "hsv_lower": (0, 100, 100), "hsv_upper": (10, 255, 255)},   # Example: Red
     2: {"name": "Topping 1", "process_time": 3.0,
         "hsv_lower": (20, 100, 100), "hsv_upper": (40, 255, 255)},   # Example: Yellow
-    3: {"name": "Topping 2", "process_time": 3.0,
+    0: {"name": "Topping 2", "process_time": 3.0,
         "hsv_lower": (50, 100, 50), "hsv_upper": (80, 255, 255)},   # Example: Green
     4: {"name": "Topping 3", "process_time": 3.0,
         "hsv_lower": (140, 100, 50), "hsv_upper": (170, 255, 255)},  # Example: Magenta/Pink

@@ -89,6 +89,17 @@ DRIVE_INCREMENT = 0.03          # Meters to drive forward when searching for col
 DRIVE_SPEED = 0.1  # m/s
 ROTATE_SPEED = 0.8  # rad/s
 
+# --- Line Following Configuration ---
+LINE_DETECTION_CONFIG = {
+    "crop_height": (60, 120),  # (y_start, y_end) for ROI
+    "crop_width": (0, 160),    # (x_start, x_end) for ROI
+    "threshold": 60,           # Binary threshold value
+    "centroid_ranges": {
+        "right": 120,          # >= this value means turn right
+        "left": 50,           # <= this value means turn left
+    }
+}
+
 # --- State Machine Definition ---
 class RobotState(Enum):
     IDLE = auto()
@@ -102,6 +113,8 @@ class RobotState(Enum):
     ERROR = auto()                   # General error
     CAMERA_ERROR = auto()            # Camera initialization failed
     AIRTABLE_ERROR = auto()          # Airtable communication error or config issue
+    LINE_FOLLOWING = auto()          # New state for line following
+    LINE_LOST = auto()               # When line is lost
 
 # --- Main Robot Control Class ---
 class PancakeRobotNode(Node):
@@ -168,6 +181,11 @@ class PancakeRobotNode(Node):
 
         self.get_logger().info("Pancake Robot Node Initialized and Ready.")
         self.play_sound([(440, 200), (550, 300)]) # Play startup sound
+
+        # Line following variables
+        self.last_centroid = None
+        self.line_lost_counter = 0
+        self.max_line_lost_attempts = 10
 
     # --- Movement Actions ---
     def drive_distance(self, distance):
@@ -276,6 +294,13 @@ class PancakeRobotNode(Node):
             image = self.picam2.capture_array()
             # If color issues, explicitly convert: image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR) or similar
 
+            # Show raw camera feed
+            cv2.imshow("Camera Feed", image)
+
+            # If in line following mode, process line detection
+            if self.state == RobotState.LINE_FOLLOWING:
+                self.detect_and_follow_line(image)
+
             # Convert to HSV color space
             hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
@@ -302,6 +327,70 @@ class PancakeRobotNode(Node):
             # Potentially set state to CAMERA_ERROR if recurring
             return False
 
+    def detect_and_follow_line(self, image):
+        """Process image to detect and follow a black line."""
+        try:
+            # Crop the image to region of interest
+            h_start, h_end = LINE_DETECTION_CONFIG["crop_height"]
+            w_start, w_end = LINE_DETECTION_CONFIG["crop_width"]
+            crop_img = image[h_start:h_end, w_start:w_end]
+
+            # Convert to grayscale and blur
+            gray = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
+            blur = cv2.GaussianBlur(gray, (5,5), 0)
+
+            # Apply thresholding
+            _, binary_img = cv2.threshold(blur, LINE_DETECTION_CONFIG["threshold"], 
+                                        255, cv2.THRESH_BINARY_INV)
+
+            # Find contours
+            contours, _ = cv2.findContours(binary_img.copy(), 
+                                         cv2.RETR_TREE, 
+                                         cv2.CHAIN_APPROX_SIMPLE)
+
+            # Display processing steps
+            debug_view = np.hstack([gray, blur, binary_img])
+            cv2.imshow("Line Detection Steps", debug_view)
+
+            if len(contours) > 0:
+                # Find largest contour
+                c = max(contours, key=cv2.contourArea)
+                M = cv2.moments(c)
+
+                if M['m00'] != 0:
+                    cx = int(M['m10'] / M['m00'])
+                    cy = int(M['m01'] / M['m00'])
+                    self.last_centroid = (cx, cy)
+
+                    # Draw visual markers
+                    viz_img = crop_img.copy()
+                    cv2.line(viz_img, (cx, 0), (cx, h_end-h_start), (255, 0, 0), 1)
+                    cv2.line(viz_img, (0, cy), (w_end-w_start, cy), (255, 0, 0), 1)
+                    cv2.drawContours(viz_img, [c], -1, (0, 255, 0), 2)
+                    cv2.imshow("Line Following", viz_img)
+
+                    # Determine movement
+                    if cx >= LINE_DETECTION_CONFIG["centroid_ranges"]["right"]:
+                        self.rotate_angle(0.1)  # Small right turn
+                        self.get_logger().debug("Line Follow: Turn Right")
+                    elif cx <= LINE_DETECTION_CONFIG["centroid_ranges"]["left"]:
+                        self.rotate_angle(-0.1)  # Small left turn
+                        self.get_logger().debug("Line Follow: Turn Left")
+                    else:
+                        self.drive_distance(DRIVE_INCREMENT)  # Move forward
+                        self.get_logger().debug("Line Follow: On Track")
+                    
+                    self.line_lost_counter = 0
+                    return True
+
+            self.line_lost_counter += 1
+            self.get_logger().warn(f"Line lost! Attempt {self.line_lost_counter}")
+            return False
+
+        except Exception as e:
+            self.get_logger().error(f"Line detection error: {e}")
+            return False
+
     # --- Station & Process Simulation ---
     def simulate_processing(self, duration):
         """Placeholder to simulate work time at a station."""
@@ -314,42 +403,73 @@ class PancakeRobotNode(Node):
         """Fetches the oldest 'To do' order from Airtable using configured credentials."""
         self.get_logger().info("Attempting to fetch order from Airtable...")
 
+        # Print URL and headers for debugging (remove sensitive data)
+        sanitized_headers = {k: '***' if k == 'Authorization' else v for k, v in AIRTABLE_HEADERS.items()}
+        self.get_logger().debug(f"Airtable URL: {AIRTABLE_URL}")
+        self.get_logger().debug(f"Headers: {sanitized_headers}")
+
+        # Simplified filter formula and added sorting
         params = {
             "maxRecords": 1,
-            "filterByFormula": f"({{{AIRTABLE_STATUS_FIELD}}}='{STATUS_PENDING}')",
+            "filterByFormula": "{Status}='To do'",  # Simplified formula
+            "sort[0][field]": "Name",
+            "sort[0][direction]": "asc"
         }
+        
+        self.get_logger().debug(f"Query parameters: {params}")
         order_to_process = None
 
         try:
             response = requests.get(url=AIRTABLE_URL, headers=AIRTABLE_HEADERS, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
+
+            # Log complete response for debugging
+            self.get_logger().debug(f"Raw Airtable Response: {json.dumps(data, indent=2)}")
+
+            if 'error' in data:
+                self.get_logger().error(f"Airtable API Error: {data['error']}")
+                return None
+
             records = data.get("records", [])
+            self.get_logger().debug(f"Number of records found: {len(records)}")
 
             if records:
                 record = records[0]
                 record_id = record.get("id")
                 fields = record.get("fields", {})
+                
+                # Log all fields received
+                self.get_logger().debug(f"Record fields: {fields}")
 
                 order_id = fields.get(AIRTABLE_NAME_COLUMN)
                 toppings_data = {topping: fields.get(topping, "no") for topping in AIRTABLE_TOPPINGS_COLUMNS}
 
                 if not record_id or not order_id:
-                    self.get_logger().error(f"Fetched record missing 'id' or '{AIRTABLE_NAME_COLUMN}'. Record data: {record}")
-                else:
-                    self.get_logger().info(f"Fetched order: ID='{order_id}', RecordID='{record_id}', Toppings={toppings_data}")
-                    order_to_process = {
-                        "record_id": record_id,
-                        "pancake_id": order_id,
-                        "toppings": [topping for topping, value in toppings_data.items() if value.lower() == "yes"]
-                    }
+                    self.get_logger().error(f"Fetched record missing required fields. Record: {record}")
+                    return None
+
+                self.get_logger().info(f"Fetched order: ID='{order_id}', RecordID='{record_id}', Toppings={toppings_data}")
+                order_to_process = {
+                    "record_id": record_id,
+                    "pancake_id": order_id,
+                    "toppings": [topping for topping, value in toppings_data.items() if value.lower() == "yes"]
+                }
+                
+                # Log the processed order
+                self.get_logger().debug(f"Processed order object: {order_to_process}")
             else:
-                self.get_logger().info(f"No records found with Status='{STATUS_PENDING}'.")
+                self.get_logger().info(f"No records found with Status='To do'. Check Airtable for pending orders.")
 
         except requests.exceptions.RequestException as req_err:
             self.get_logger().error(f"Airtable request error: {req_err}")
+            if hasattr(req_err, 'response') and req_err.response is not None:
+                self.get_logger().error(f"Response status code: {req_err.response.status_code}")
+                self.get_logger().error(f"Response text: {req_err.response.text}")
         except Exception as e:
             self.get_logger().error(f"Unexpected error processing Airtable response: {e}")
+            import traceback
+            self.get_logger().error(f"Traceback: {traceback.format_exc()}")
 
         return order_to_process
 
@@ -459,17 +579,28 @@ class PancakeRobotNode(Node):
                 self.state = RobotState.CYCLE_COMPLETE
 
         elif self.state == RobotState.MOVING_TO_STATION:
-            # Check camera for the color marker of the target station
+            # First check for target color
             if self.detect_target_color(self.target_station_index):
                 self.get_logger().info(f"Target color marker for Station {self.target_station_index} ({STATION_COLORS_HSV[self.target_station_index]['name']}) detected!")
                 self.play_sound([(500, 150)]) # Arrival beep
                 self.state = RobotState.STOPPING_BEFORE_PROCESS # Go to intermediate state to stop movement
             else:
-                # Color not detected, drive forward a small amount and check again next cycle
-                self.get_logger().debug(f"Searching for Station {self.target_station_index} color, driving forward {DRIVE_INCREMENT}m...")
-                if not self.drive_distance(DRIVE_INCREMENT):
-                    self.get_logger().warn("Failed small drive increment while searching. Retrying detection/drive.")
-                    # Consider adding a timeout or failure counter here to prevent infinite loops if stuck
+                # If no station detected, follow the line
+                self.state = RobotState.LINE_FOLLOWING
+
+        elif self.state == RobotState.LINE_FOLLOWING:
+            if self.line_lost_counter >= self.max_line_lost_attempts:
+                self.get_logger().error("Line completely lost!")
+                self.state = RobotState.LINE_LOST
+                self.stop_moving()
+            else:
+                # Continue line following in detect_target_color method
+                self.detect_target_color(self.target_station_index)
+
+        elif self.state == RobotState.LINE_LOST:
+            # Implement recovery behavior here
+            self.get_logger().warn("Attempting to recover line...")
+            # Could implement search pattern here
 
         elif self.state == RobotState.STOPPING_BEFORE_PROCESS:
             # Ensure robot is stopped before proceeding

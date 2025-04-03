@@ -25,8 +25,8 @@ from irobot_create_msgs.msg import AudioNoteVector, AudioNote
 
 # --- Airtable Configuration ---
 # !!! SECURITY WARNING: Avoid hardcoding tokens in production. Use environment variables! !!!
-AIRTABLE_API_TOKEN = "YOUR_AIRTABLE_API_TOKEN" # Replace with your actual token (starts with 'pat...')
-AIRTABLE_BASE_ID = "YOUR_BASE_ID"             # Replace with your Base ID (starts with 'app...')
+AIRTABLE_API_TOKEN = "patU8FCP20PtCQfA2.32f6fc12175797c8c6f67985395aef9fb168d3c177ecc092feec853724fd35bd" # Replace with your actual token (starts with 'pat...')
+AIRTABLE_BASE_ID = "https://api.airtable.com/v0/app7psTY3i95TjiYI/Table%201"             # Replace with your Base ID (starts with 'app...')
 AIRTABLE_TABLE_NAME = "PancakeOrders"       # Replace with your Table Name or ID (starts with 'tbl...')
 AIRTABLE_URL = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE_NAME}"
 AIRTABLE_HEADERS = {

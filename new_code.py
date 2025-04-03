@@ -58,7 +58,6 @@ STATUS_PENDING = "Pending"
 STATUS_STARTED = "Started"
 STATUS_READY = "Ready"
 
-
 # --- Camera Configuration ---
 CAMERA_RESOLUTION = (640, 480) # Width, Height
 
@@ -115,7 +114,7 @@ class PancakeRobotNode(Node):
         self.get_logger().info("Pancake Robot Node Initializing...")
 
         # Airtable Configuration Check
-        if "YOUR_" in AIRTABLE_API_TOKEN or "YOUR_" in AIRTABLE_BASE_ID or AIRTABLE_TABLE_NAME == "PancakesOrders":
+        if "YOUR_" in AIRTABLE_API_TOKEN or "YOUR_" in AIRTABLE_BASE_ID or AIRTABLE_TABLE_NAME == "PancakeOrders":
              self.get_logger().warn("="*60)
              self.get_logger().warn("!!! POSSIBLE AIRTABLE CONFIG ISSUE DETECTED !!!")
              self.get_logger().warn("Please verify AIRTABLE_API_TOKEN, AIRTABLE_BASE_ID, and AIRTABLE_TABLE_NAME constants.")
@@ -343,43 +342,47 @@ class PancakeRobotNode(Node):
                 record_id = record.get("id")
                 fields = record.get("fields", {})
 
-                # Extract fields using defined constant names
-                order_id = fields.get(AIRTABLE_ORDER_ID_FIELD)
-                toppings_data = fields.get(AIRTABLE_TOPPINGS_FIELD, "") # Default to empty string
+                # ===========================================================
+                # ===> Use "Name" and "Notes" column names from config <===
+                # ===========================================================
+                # Extract fields using the constant names defined at the top
+                order_id = fields.get(AIRTABLE_NAME_COLUMN)  # Fetch OrderID from "Name" column
+                toppings_data = fields.get(AIRTABLE_NOTES_COLUMN, "") # Fetch Toppings from "Notes", default to ""
+                # ===========================================================
 
                 # Basic validation
                 if not record_id or not order_id:
-                     self.get_logger().error(f"Fetched record missing 'id' ({record_id}) or '{AIRTABLE_ORDER_ID_FIELD}' ({order_id}). Record data: {record}")
+                     # Use the correct constant name in the error message
+                     self.get_logger().error(f"Fetched record missing 'id' ({record_id}) or '{AIRTABLE_NAME_COLUMN}' field ({order_id}). Record data: {record}")
                 else:
-                    self.get_logger().info(f"Fetched order: ID={order_id}, RecordID={record_id}, Toppings='{toppings_data}'")
+                    # Update log message to reflect where data came from
+                    self.get_logger().info(f"Fetched order: ID (from '{AIRTABLE_NAME_COLUMN}')='{order_id}', RecordID='{record_id}', Toppings (from '{AIRTABLE_NOTES_COLUMN}')='{toppings_data}'")
                     # Basic parsing for toppings (adjust if needed based on Airtable field type)
                     toppings_list = []
                     if isinstance(toppings_data, str) and toppings_data:
+                        # Assuming toppings in "Notes" are comma-separated
                         toppings_list = [t.strip() for t in toppings_data.split(',')]
-                    elif isinstance(toppings_data, list):
+                    elif isinstance(toppings_data, list): # Handle if "Notes" is already a list/multi-select
                         toppings_list = toppings_data
 
                     order_to_process = {
                         "record_id": record_id,
-                        "pancake_id": order_id,
-                        "toppings": toppings_list
+                        "pancake_id": order_id, # This now holds the value from the "Name" column
+                        "toppings": toppings_list # This now holds data parsed from the "Notes" column
                     }
             else:
                 self.get_logger().info(f"No records found with Status='{STATUS_PENDING}'.")
 
+        # --- Keep the existing error handling ---
         except requests.exceptions.Timeout:
             self.get_logger().error(f"Airtable request timed out ({AIRTABLE_URL}).")
         except requests.exceptions.ConnectionError:
              self.get_logger().error(f"Airtable connection error ({AIRTABLE_URL}). Check network.")
         except requests.exceptions.HTTPError as http_err:
              self.get_logger().error(f"Airtable HTTP error: {http_err}") # Includes status code
-             # Specific handling for 403? Could mean token permissions issue.
-             if http_err.response.status_code == 403:
-                  self.get_logger().error("--> ACCESS FORBIDDEN (403): Check API Token scopes and Base access permissions.")
-             elif http_err.response.status_code == 404:
-                  self.get_logger().error("--> NOT FOUND (404): Check Base ID and Table Name.")
-             elif http_err.response.status_code == 401:
-                  self.get_logger().error("--> UNAUTHORIZED (401): Check API Token value.")
+             if http_err.response.status_code == 403: self.get_logger().error("--> ACCESS FORBIDDEN (403): Check API Token scopes and Base access permissions.")
+             elif http_err.response.status_code == 404: self.get_logger().error("--> NOT FOUND (404): Check Base ID and Table Name.")
+             elif http_err.response.status_code == 401: self.get_logger().error("--> UNAUTHORIZED (401): Check API Token value.")
         except requests.exceptions.RequestException as req_err:
             self.get_logger().error(f"Airtable request error: {req_err}")
         except json.JSONDecodeError as json_err:
@@ -501,9 +504,6 @@ class PancakeRobotNode(Node):
                     self.get_logger().error(f"Failed to update status for order {self.current_order['pancake_id']} to '{STATUS_STARTED}'. Entering Airtable Error state.")
                     self.current_order = None # Clear failed order
                     self.state = RobotState.AIRTABLE_ERROR # Treat failure to update start status as critical error
-                    # Alternatively, could retry fetch after a delay:
-                    # self.state = RobotState.IDLE
-                    # time.sleep(10) # Wait before immediate retry
             else:
                 # No orders found, or error during fetch
                 self.get_logger().info("No pending orders found or error during fetch.")
@@ -641,7 +641,7 @@ def main(args=None):
         if pancake_robot_node:
             pancake_robot_node.get_logger().info("Initiating shutdown sequence...")
             # 1. Stop the control loop timer explicitly if it's running
-            if pancake_robot_node.timer and not pancake_robot_node.timer.is_canceled():
+            if hasattr(pancake_robot_node, 'timer') and pancake_robot_node.timer and not pancake_robot_node.timer.is_canceled():
                 pancake_robot_node.timer.cancel()
             # 2. Attempt to stop the robot's movement
             pancake_robot_node.shutdown_robot()

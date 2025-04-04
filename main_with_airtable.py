@@ -54,9 +54,23 @@ AIRTABLE_TOPPINGS_COLUMNS = ["sprinkles", "Whipped Cream", "Chocolate Chips"]  #
 AIRTABLE_STATUS_FIELD = "Status"       # The field storing "Done", "In Progress", "To do"
 
 # --- Status values expected in the AIRTABLE_STATUS_FIELD ---
-STATUS_PENDING = "To do"
-STATUS_STARTED = "In Progress"
-STATUS_READY = "Done"
+STATUS_PENDING = "Pending"
+STATUS_AT_ORDER = "At Order Station"
+STATUS_AT_BATTER = "At Batter Station"
+STATUS_AT_TOPPING_1 = "At Topping 1"
+STATUS_AT_TOPPING_2 = "At Topping 2"
+STATUS_AT_TOPPING_3 = "At Topping 3"
+STATUS_COMPLETED = "Completed"
+STATUS_FAILED = "Failed"
+
+# Map station indices to their Airtable status
+STATION_STATUS_MAP = {
+    0: STATUS_AT_ORDER,    # Order Station
+    1: STATUS_AT_BATTER,   # Batter/Cook Station
+    2: STATUS_AT_TOPPING_1, # First topping station
+    3: STATUS_AT_TOPPING_2, # Second topping station
+    4: STATUS_AT_TOPPING_3  # Third topping station
+}
 
 # --- Camera Configuration ---
 CAMERA_RESOLUTION = (640, 480) # Width, Height
@@ -186,6 +200,10 @@ class PancakeRobotNode(Node):
         self.last_centroid = None
         self.line_lost_counter = 0
         self.max_line_lost_attempts = 10
+
+        # Add station tracking
+        self.current_station_status = None
+        self.station_arrival_time = None
 
     # --- Movement Actions ---
     def drive_distance(self, distance):
@@ -400,7 +418,7 @@ class PancakeRobotNode(Node):
 
     # --- Airtable Communication ---
     def fetch_order_from_airtable(self):
-        """Fetches the oldest 'To do' order from Airtable using configured credentials."""
+        """Fetches the oldest Pending order from Airtable."""
         self.get_logger().info("Attempting to fetch order from Airtable...")
 
         # Print URL and headers for debugging (remove sensitive data)
@@ -411,7 +429,7 @@ class PancakeRobotNode(Node):
         # Simplified filter formula and added sorting
         params = {
             "maxRecords": 1,
-            "filterByFormula": "{Status}='To do'",  # Simplified formula
+            "filterByFormula": f"{{Status}}='{STATUS_PENDING}'",
             "sort[0][field]": "Name",
             "sort[0][direction]": "asc"
         }
@@ -500,6 +518,36 @@ class PancakeRobotNode(Node):
 
         return False
 
+    def update_station_status(self):
+        """Updates Airtable with the current station status."""
+        if not self.current_order or not self.current_order["record_id"]:
+            return False
+
+        new_status = STATION_STATUS_MAP.get(self.current_station_index)
+        if not new_status:
+            self.get_logger().error(f"No status mapping for station index {self.current_station_index}")
+            return False
+
+        if new_status == self.current_station_status:
+            return True  # Already at this status, no update needed
+
+        self.get_logger().info(f"Updating order {self.current_order['pancake_id']} status to: {new_status}")
+        
+        if self.update_order_status(self.current_order["record_id"], new_status):
+            self.current_station_status = new_status
+            self.station_arrival_time = time.time()
+            return True
+        return False
+
+    def handle_station_failure(self, error_message):
+        """Handles failures by updating Airtable status and transitioning to error state."""
+        self.get_logger().error(f"Station failure: {error_message}")
+        if self.current_order and self.current_order["record_id"]:
+            if self.update_order_status(self.current_order["record_id"], STATUS_FAILED):
+                self.get_logger().info(f"Order {self.current_order['pancake_id']} marked as failed.")
+        self.state = RobotState.ERROR
+        self.stop_moving()
+
     # --- Sound Utility ---
     def play_sound(self, notes):
         """Publishes a sequence of AudioNotes to the /cmd_audio topic."""
@@ -553,17 +601,16 @@ class PancakeRobotNode(Node):
             fetched_order = self.fetch_order_from_airtable()
             if fetched_order:
                 self.current_order = fetched_order # Store {'record_id': ..., 'pancake_id': ..., 'toppings': ...}
-                # Update status to Started immediately after fetching
-                if self.update_order_status(self.current_order["record_id"], STATUS_STARTED):
+                self.current_station_status = None  # Reset station status
+                # Update to first station status
+                if self.update_order_status(self.current_order["record_id"], STATUS_AT_ORDER):
+                    self.current_station_status = STATUS_AT_ORDER
                     self.current_station_index = 0 # Logically at start
                     self.target_station_index = 1 # Set target to the first processing station (index 1)
-                    self.get_logger().info(f"Order {self.current_order['pancake_id']} '{STATUS_STARTED}'. Moving from {STATION_COLORS_HSV[self.current_station_index]['name']} to find {STATION_COLORS_HSV[self.target_station_index]['name']} color marker.")
+                    self.get_logger().info(f"Order {self.current_order['pancake_id']} starting at Order Station")
                     self.state = RobotState.MOVING_TO_STATION
                 else:
-                    # Failed to update status - critical problem?
-                    self.get_logger().error(f"Failed to update status for order {self.current_order['pancake_id']} to '{STATUS_STARTED}'. Entering Airtable Error state.")
-                    self.current_order = None # Clear failed order
-                    self.state = RobotState.AIRTABLE_ERROR # Treat failure to update start status as critical error
+                    self.handle_station_failure("Failed to update initial station status")
             else:
                 # No orders found, or error during fetch
                 self.get_logger().info("No pending orders found or error during fetch.")
@@ -606,7 +653,10 @@ class PancakeRobotNode(Node):
             # Ensure robot is stopped before proceeding
             if self.stop_moving():
                 self.current_station_index = self.target_station_index # Officially arrived at the station
-                self.get_logger().info(f"Stopped at Station {self.current_station_index}. Beginning processing.")
+                if not self.update_station_status():
+                    self.handle_station_failure(f"Failed to update status for station {self.current_station_index}")
+                    return
+                self.get_logger().info(f"Stopped at {STATION_COLORS_HSV[self.current_station_index]['name']}. Beginning processing.")
                 self.state = RobotState.PROCESSING_AT_STATION
             else:
                  self.get_logger().error("Failed to execute stop command before processing! Retrying stop.")
@@ -624,13 +674,13 @@ class PancakeRobotNode(Node):
             else: # Finished the last processing station (Station 4)
                  self.get_logger().info(f"Processing done at last station {station_info['name']}.")
                  # Update status to Ready in Airtable
-                 if self.update_order_status(self.current_order["record_id"], STATUS_READY):
-                     self.get_logger().info(f"Order {self.current_order['pancake_id']} marked as '{STATUS_READY}'. Returning to start.")
+                 if self.update_order_status(self.current_order["record_id"], STATUS_COMPLETED):
+                     self.get_logger().info(f"Order {self.current_order['pancake_id']} marked as '{STATUS_COMPLETED}'. Returning to start.")
                      self.target_station_index = 0 # Target is now the start station marker (index 0)
                      self.state = RobotState.RETURNING_TO_START
                  else:
                      # Failed to update final status - critical error
-                     self.get_logger().error(f"Failed to update status for order {self.current_order['pancake_id']} to '{STATUS_READY}'. Entering Airtable Error state.")
+                     self.get_logger().error(f"Failed to update status for order {self.current_order['pancake_id']} to '{STATUS_COMPLETED}'. Entering Airtable Error state.")
                      self.state = RobotState.AIRTABLE_ERROR
 
         elif self.state == RobotState.RETURNING_TO_START:

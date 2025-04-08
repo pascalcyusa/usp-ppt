@@ -50,7 +50,7 @@ AIRTABLE_HEADERS = {
 # --- Field names in your Airtable base (MUST match exactly, case-sensitive) ---
 # Mapping Airtable Columns to Script Variables:
 AIRTABLE_NAME_COLUMN = "Name"          # Airtable column to fetch for 'pancake_id' (OrderID)
-AIRTABLE_TOPPINGS_COLUMNS = ["sprinkles", "Whipped Cream", "Chocolate Chips"]  # Columns for toppings
+AIRTABLE_TOPPINGS_COLUMNS = ["Sprinkles", "Whipped Cream", "Chocolate Chips"]  # Columns for toppings
 AIRTABLE_STATUS_FIELD = "Status"       # The field storing "Done", "In Progress", "To do"
 
 # --- Status values expected in the AIRTABLE_STATUS_FIELD ---

@@ -40,21 +40,26 @@ class IRLineFollowerWithStations(Node):
         self.camera.start()
         time.sleep(2)
 
-        # Color Detection Configuration
+        # Station Colors (HSV format)
         self.station_colors = {
             "Blue Station": {
-                "lower": (100, 150, 150),  # Adjusted for better detection
-                "upper": (130, 255, 255)
+                "lower": (100, 150, 150),
+                "upper": (130, 255, 255),
+                "color_bgr": (255, 0, 0)  # BGR color for visualization
             },
             "Green Station": {
-                "lower": (50, 150, 150),   # Adjusted for better detection
-                "upper": (80, 255, 255)
+                "lower": (50, 150, 150),
+                "upper": (80, 255, 255),
+                "color_bgr": (0, 255, 0)  # BGR color for visualization
             }
         }
-        self.color_detection_threshold = 3000  # Adjusted threshold
+        
+        # Detection parameters
+        self.color_detection_threshold = 3000
         self.is_at_station = False
         self.current_station = None
-        self.station_wait_time = 3.0  # seconds to wait at station
+        self.station_wait_time = 3.0
+        self.debug_windows = True  # Enable debug windows
         
         # ROS2 Setup
         self.drive_client = ActionClient(self, DriveDistance, '/drive_distance')
@@ -68,48 +73,74 @@ class IRLineFollowerWithStations(Node):
         self.get_logger().info('IR Line Follower with Stations initialized')
 
     def color_timer_callback(self):
-        """Handle color detection"""
+        """Handle color detection with visualization"""
         if self.is_at_station:
             return
 
         frame = self.camera.capture_array()
-        # Rotate the frame 180 degrees to match IR sensor orientation
-        frame = cv2.rotate(frame, cv2.ROTATE_180)
-        
-        # Convert to HSV and create mask for white background
+        frame = cv2.rotate(frame, cv2.ROTATE_180)  # Rotate camera image
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        
+        # Create debug visualization
+        debug_frame = frame.copy()
+        color_mask = np.zeros_like(frame)
+        
+        # Create white background mask
         white_lower = np.array([0, 0, 200])
         white_upper = np.array([180, 30, 255])
         white_mask = cv2.inRange(hsv, white_lower, white_upper)
         
-        for station_name, color_range in self.station_colors.items():
-            lower = np.array(color_range["lower"])
-            upper = np.array(color_range["upper"])
-            color_mask = cv2.inRange(hsv, lower, upper)
+        for station_name, params in self.station_colors.items():
+            lower = np.array(params["lower"])
+            upper = np.array(params["upper"])
+            color_bgr = params["color_bgr"]
             
-            # Exclude white background from color detection
+            # Create color mask excluding white background
+            color_mask = cv2.inRange(hsv, lower, upper)
             color_mask = cv2.bitwise_and(color_mask, cv2.bitwise_not(white_mask))
             
+            # Count detected pixels
             detected_pixels = cv2.countNonZero(color_mask)
             
+            # Add visualization
+            detected_area = cv2.bitwise_and(frame, frame, mask=color_mask)
+            debug_frame = cv2.addWeighted(debug_frame, 1, detected_area, 0.5, 0)
+            
+            # Add text showing detection info
+            text = f"{station_name}: {detected_pixels} px"
+            y_pos = 30 * (list(self.station_colors.keys()).index(station_name) + 1)
+            cv2.putText(debug_frame, text, (10, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_bgr, 2)
+            
+            # Check for station detection
             if detected_pixels > self.color_detection_threshold:
-                self.handle_station_arrival(station_name)
-                break
+                if not self.is_at_station:
+                    self.handle_station_arrival(station_name)
+        
+        if self.debug_windows:
+            # Show debug windows
+            cv2.imshow("Camera View (Press 'q' to quit)", debug_frame)
+            cv2.imshow("HSV View", hsv)
+            
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                self.cleanup()
+                rclpy.shutdown()
 
     def handle_station_arrival(self, station_name):
         """Handle arrival at a station"""
-        if not self.is_at_station:
-            self.is_at_station = True
-            self.current_station = station_name
-            self.get_logger().info(f'Stopping at {station_name}')
-            self.move_robot(0.0, 0.0)  # Stop robot
-            
-            # Schedule resume after wait time
-            self.create_timer(
-                self.station_wait_time,
-                lambda: self.resume_movement(station_name),
-                oneshot=True
-            )
+        self.is_at_station = True
+        self.current_station = station_name
+        self.get_logger().info(f'Stopping at {station_name}')
+        
+        # Stop the robot
+        self.move_robot(0.0, 0.0)
+        
+        # Create a timer to resume movement after wait time
+        self.create_timer(
+            self.station_wait_time,
+            lambda: self.resume_movement(station_name),
+            oneshot=True
+        )
 
     def resume_movement(self, station_name):
         """Resume movement after station stop"""

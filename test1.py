@@ -50,7 +50,7 @@ class IRLineFollowerWithStations(Node):
             "Green Station": {
                 "lower": (50, 150, 150),
                 "upper": (80, 255, 255),
-                "color_bgr": (0, 255, 0)  # BGR color for visualization
+                "color_bgr": (255, 0, 0)  # BGR color for visualization
             }
         }
         

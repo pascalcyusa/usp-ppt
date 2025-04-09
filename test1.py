@@ -58,7 +58,7 @@ class IRLineFollowerWithStations(Node):
         self.color_detection_threshold = 3000
         self.is_at_station = False
         self.current_station = None
-        self.station_wait_time = 3.0
+        self.station_wait_time = 5.0
         self.debug_windows = True  # Enable debug windows
         
         # ROS2 Setup

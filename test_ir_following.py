@@ -77,12 +77,12 @@ class IRLineFollower(Node):
             self.drive_distance(self.DRIVE_INCREMENT)
             
         # Left sensor on line (LOW), right sensor off (HIGH)
-        elif left_sensor == GPIO.LOW and right_sensor == GPIO.HIGH:
+        elif left_sensor == GPIO.HIGH and right_sensor == GPIO.LOW:
             self.get_logger().info('Turning left')
             self.rotate_angle(-0.1)
             
         # Right sensor on line (LOW), left sensor off (HIGH)
-        elif left_sensor == GPIO.HIGH and right_sensor == GPIO.LOW:
+        elif left_sensor == GPIO.LOW and right_sensor == GPIO.HIGH:
             self.get_logger().info('Turning right')
             self.rotate_angle(0.1)
 

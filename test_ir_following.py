@@ -71,8 +71,11 @@ class IRLineFollower(Node):
         
         # Both sensors off the line (LOW)
         if left_sensor == GPIO.LOW and right_sensor == GPIO.LOW:
-            self.get_logger().warn('Both sensors off line!')
-            self.move_robot(0.0, 0.0)  # Stop
+            self.get_logger().warn('Both sensors off line! Attempting recovery...')
+            # Slowly rotate in place to find the line again
+            # Using a slower rotation speed for better control
+            recovery_rotation = self.ROTATE_SPEED * 0.5
+            self.move_robot(0.0, recovery_rotation)  # Rotate clockwise slowly
             return
             
         # Both sensors on the line (HIGH) - move forward

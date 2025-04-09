@@ -27,9 +27,9 @@ class IRLineFollower(Node):
         # Configuration
         self.POLL_RATE = 0.001  # Increased the sampling speed
         self.DRIVE_SPEED = 0.01
-        self.ROTATE_SPEED = 0.5
+        self.ROTATE_SPEED = 0.2 # Adjusted rotation speed
         self.BASE_SPEED = 0.01
-        self.TURN_FACTOR = 0.5
+        self.TURN_FACTOR = 0.7 # Adjusted turn factor from 0.5
         self.MIN_ROTATION = 0.1
         
         # Action clients for movement

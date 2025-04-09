@@ -15,8 +15,8 @@ class IRLineFollower(Node):
         GPIO.setmode(GPIO.BOARD) 
         
         # Define GPIO pins for IR sensors
-        self.LEFT_IR_PIN = 16   # GPIO17 - Adjust as needed
-        self.RIGHT_IR_PIN = 18  # GPIO27 - Adjust as needed
+        self.LEFT_IR_PIN = 16   
+        self.RIGHT_IR_PIN = 18 
         
         # Setup GPIO pins as inputs
         GPIO.setup(self.LEFT_IR_PIN, GPIO.IN)

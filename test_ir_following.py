@@ -43,13 +43,6 @@ class IRLineFollower(Node):
             10
         )
         
-        # Add turn history tracking
-        self.turn_history = []  # Will store -1 for left turns, 1 for right turns
-        self.MAX_HISTORY = 5    # Keep last 5 turns
-        self.RECOVERY_TURN_SPEED = 0.3  # Slower speed for recovery turns
-        self.lost_line_count = 0  # Counter for consecutive readings off the line
-        self.MAX_LOST_COUNT = 3  # Number of consecutive readings before recovery
-
         # Create timer without async wrapper
         self.timer = self.create_timer(
             self.POLL_RATE,
@@ -73,42 +66,31 @@ class IRLineFollower(Node):
         left_sensor, right_sensor = self.read_ir_sensors()
         
         # Calculate control values
-        linear_speed = self.BASE_SPEED  # Invert forward speed
+        linear_speed = self.BASE_SPEED
         angular_speed = 0.0
         
-        # Both sensors off the line (HIGH) - potential recovery needed
-        if left_sensor == GPIO.HIGH and right_sensor == GPIO.HIGH:
-            self.lost_line_count += 1
-            self.get_logger().warn(f'Both sensors off line! Count: {self.lost_line_count}')
-            
-            if self.lost_line_count >= self.MAX_LOST_COUNT:
-                self.recover_line()
-                return
-            else:
-                self.move_robot(0.0, 0.0)  # Stop remains same
-                return
-            
-        # Reset lost line counter if we're on the line
-        self.lost_line_count = 0
-            
-        # Both sensors on the line (LOW) - move backward (inverted forward)
+        # Both sensors off the line (LOW)
         if left_sensor == GPIO.LOW and right_sensor == GPIO.LOW:
-            self.get_logger().info('On line - moving backward')
+            self.get_logger().warn('Both sensors off line!')
+            self.move_robot(0.0, 0.0)  # Stop
+            return
+            
+        # Both sensors on the line (HIGH) - move forward
+        elif left_sensor == GPIO.HIGH and right_sensor == GPIO.HIGH:
+            self.get_logger().info('On line - moving forward')
             angular_speed = 0.0
             
-        # Left sensor on line (LOW), right sensor off (HIGH) - turn right (inverted left)
-        elif left_sensor == GPIO.LOW and right_sensor == GPIO.HIGH:
-            self.get_logger().info('Turning right')
-            angular_speed = self.ROTATE_SPEED * self.TURN_FACTOR  # Positive for right turn
-            linear_speed *= 0.8  # Slow down during turns
-            self.record_turn(1)  # Record right turn (inverted from left)
-            
-        # Right sensor on line (LOW), left sensor off (HIGH) - turn left (inverted right)
+        # Left sensor on line (HIGH), right sensor off (LOW) - turn left
         elif left_sensor == GPIO.HIGH and right_sensor == GPIO.LOW:
             self.get_logger().info('Turning left')
-            angular_speed = -self.ROTATE_SPEED * self.TURN_FACTOR  # Negative for left turn
+            angular_speed = -self.ROTATE_SPEED * self.TURN_FACTOR
             linear_speed *= 0.8  # Slow down during turns
-            self.record_turn(-1)  # Record left turn (inverted from right)
+            
+        # Right sensor on line (HIGH), left sensor off (LOW) - turn right
+        elif left_sensor == GPIO.LOW and right_sensor == GPIO.HIGH:
+            self.get_logger().info('Turning right')
+            angular_speed = self.ROTATE_SPEED * self.TURN_FACTOR
+            linear_speed *= 0.8  # Slow down during turns
 
         # Apply minimum rotation threshold
         if 0 < abs(angular_speed) < self.MIN_ROTATION:
@@ -142,33 +124,6 @@ class IRLineFollower(Node):
 
     def stop_moving(self):
         return self.drive_distance(0.0)
-
-    def record_turn(self, direction):
-        """Record turn direction (-1 for left, 1 for right)"""
-        self.turn_history.append(direction)
-        if len(self.turn_history) > self.MAX_HISTORY:
-            self.turn_history.pop(0)  # Remove oldest turn
-
-    def recover_line(self):
-        """Attempt to recover the line based on turn history (with inverted directions)"""
-        if not self.turn_history:
-            self.get_logger().warn('No turn history available for recovery')
-            self.move_robot(0.0, 0.0)  # Stop remains same
-            return
-
-        # Get the last turn direction but DON'T reverse it (already inverted in recording)
-        last_turn = self.turn_history[-1]
-        recovery_direction = last_turn  # Same direction as last turn (inverted logic)
-        
-        self.get_logger().info(f'Attempting recovery: turning {"left" if recovery_direction < 0 else "right"}')
-        
-        # Make recovery turn with inverted direction
-        angular_speed = self.RECOVERY_TURN_SPEED * recovery_direction
-        self.move_robot(0.0, angular_speed)  # Turn in place
-        
-        # Clear turn history after recovery attempt
-        self.turn_history = []
-        self.lost_line_count = 0
 
     def cleanup(self):
         """Clean up GPIO on shutdown"""

@@ -30,7 +30,8 @@ class ColorDetector:
             while True:
                 # Capture frame
                 frame = self.camera.capture_array()
-                frame = cv2.flip(frame, 0)  # Flip vertically (0 means flip around the x-axis)
+                # Remove or comment out the flip operation
+                # frame = cv2.flip(frame, 0)  # Flip vertically (0 means flip around the x-axis)
                 # Convert to HSV
                 hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
                 

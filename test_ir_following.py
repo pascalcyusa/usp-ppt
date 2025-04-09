@@ -12,7 +12,7 @@ class IRLineFollower(Node):
         super().__init__('ir_line_follower')
         
         # GPIO Setup
-        GPIO.setmode(GPIO.BCM)  # Use Broadcom pin-numbering scheme
+        GPIO.setmode(GPIO.BOARD) 
         
         # Define GPIO pins for IR sensors
         self.LEFT_IR_PIN = 16   # GPIO17 - Adjust as needed

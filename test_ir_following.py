@@ -25,12 +25,12 @@ class IRLineFollower(Node):
         GPIO.setup(self.RIGHT_IR_PIN, GPIO.IN)
         
         # Configuration
-        self.POLL_RATE = 0.001  # Increased the sampling speed
-        self.DRIVE_SPEED = 0.01
-        self.ROTATE_SPEED = 0.5
-        self.BASE_SPEED = 0.01
-        self.TURN_FACTOR = 0.5
-        self.MIN_ROTATION = 0.1
+        self.POLL_RATE = 0.05    # 20Hz sampling rate (balanced performance)
+        self.DRIVE_SPEED = 0.2    # Moderate speed for reliable movement
+        self.ROTATE_SPEED = 0.8   # Quicker turning capability
+        self.BASE_SPEED = 0.01    # Good balance of speed and control
+        self.TURN_FACTOR = 0.7    # More responsive turning
+        self.MIN_ROTATION = 0.2   # Overcome static friction
         
         # Action clients for movement
         self.drive_client = ActionClient(self, DriveDistance, '/drive_distance')

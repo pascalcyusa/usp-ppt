@@ -25,7 +25,7 @@ class IRLineFollower(Node):
         GPIO.setup(self.RIGHT_IR_PIN, GPIO.IN)
         
         # Configuration
-        self.POLL_RATE = 0.01  # Increased from 0.001 to prevent excessive CPU usage
+        self.POLL_RATE = 0.001  # Increased the sampling speed
         self.DRIVE_SPEED = 0.01
         self.ROTATE_SPEED = 0.1
         self.BASE_SPEED = 0.01

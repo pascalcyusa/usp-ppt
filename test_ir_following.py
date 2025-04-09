@@ -27,8 +27,8 @@ class IRLineFollower(Node):
         # Configuration
         self.POLL_RATE = 0.01  # Increased from 0.001 to prevent excessive CPU usage
         self.DRIVE_SPEED = 0.01
-        self.ROTATE_SPEED = 0.01
-        self.BASE_SPEED = 0.15
+        self.ROTATE_SPEED = 0.1
+        self.BASE_SPEED = 0.01
         self.TURN_FACTOR = 0.5
         self.MIN_ROTATION = 0.1
         

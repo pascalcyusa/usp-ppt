@@ -73,7 +73,7 @@ class IRLineFollower(Node):
         left_sensor, right_sensor = self.read_ir_sensors()
         
         # Calculate control values
-        linear_speed = -self.BASE_SPEED  # Invert forward speed
+        linear_speed = self.BASE_SPEED  # Invert forward speed
         angular_speed = 0.0
         
         # Both sensors off the line (HIGH) - potential recovery needed

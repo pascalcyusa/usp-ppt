@@ -144,18 +144,36 @@ class IRLineFollowerWithStations(Node):
         # Create timer for station wait
         self._station_timer = self.create_timer(
             self.station_wait_time,
-            lambda: self._resume_movement_callback(station_name)
+            lambda: self._move_past_station(station_name)
         )
 
+    def _move_past_station(self, station_name):
+        """Move past the station after waiting"""
+        if self.current_station == station_name:
+            # Move forward for 1 second
+            self.get_logger().info('Moving past station')
+            self.move_robot(self.BASE_SPEED, 0.0)
+            
+            # Create timer to resume normal operation after moving forward
+            self._forward_timer = self.create_timer(
+                1.0,  # Move forward for 1 second
+                lambda: self._resume_movement_callback(station_name),
+                oneshot=True
+            )
+
     def _resume_movement_callback(self, station_name):
-        """Timer callback to resume movement"""
+        """Resume normal operation after moving past station"""
         if self.current_station == station_name:
             self.is_at_station = False
             self.current_station = None
             self.get_logger().info('Resuming line following')
-            # Cancel the timer after it fires
-            self._station_timer.cancel()
-            self._station_timer.destroy()
+            # Cancel and cleanup timers
+            if hasattr(self, '_station_timer'):
+                self._station_timer.cancel()
+                self._station_timer.destroy()
+            if hasattr(self, '_forward_timer'):
+                self._forward_timer.cancel()
+                self._forward_timer.destroy()
 
     def ir_timer_callback(self):
         """Handle IR line following"""

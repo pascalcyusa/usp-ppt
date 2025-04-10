@@ -144,40 +144,18 @@ class IRLineFollowerWithStations(Node):
         # Create timer for station wait
         self._station_timer = self.create_timer(
             self.station_wait_time,
-            lambda: self._move_past_station(station_name)
+            lambda: self._resume_movement_callback(station_name)
         )
 
-    def _move_past_station(self, station_name):
-        """Move past the station after waiting"""
-        if self.current_station == station_name:
-            # Move forward for 1 second
-            self.get_logger().info('Moving past station')
-            self.move_robot(self.BASE_SPEED * 2, 0.0)  # Increased speed to move past station
-            
-            # Create timer to resume normal operation after moving forward
-            self._forward_timer = self.create_timer(
-                5.0,  # Move forward for 1 second
-                lambda: self._resume_movement_callback(station_name)
-            )
-
     def _resume_movement_callback(self, station_name):
-        """Resume normal operation after moving past station"""
+        """Resume normal operation after station stop"""
         if self.current_station == station_name:
-            # First stop the robot
-            self.move_robot(0.0, 0.0)
+            # Cleanup timer
+            if hasattr(self, '_station_timer'):
+                self._station_timer.cancel()
+                delattr(self, '_station_timer')
             
-            # Then cleanup timers safely
-            try:
-                if hasattr(self, '_station_timer'):
-                    self._station_timer.cancel()
-                    delattr(self, '_station_timer')
-                if hasattr(self, '_forward_timer'):
-                    self._forward_timer.cancel()
-                    delattr(self, '_forward_timer')
-            except Exception as e:
-                self.get_logger().warn(f'Timer cleanup error: {str(e)}')
-            
-            # Finally reset station status
+            # Reset station status
             self.is_at_station = False
             self.current_station = None
             self.get_logger().info('Resuming line following')

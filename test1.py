@@ -58,7 +58,7 @@ class IRLineFollowerWithStations(Node):
         self.color_detection_threshold = 2000
         self.is_at_station = False
         self.current_station = None
-        self.station_wait_time = 5.0
+        self.station_wait_time = 3.0
         self.debug_windows = True  # Enable debug windows
         
         # ROS2 Setup
@@ -152,31 +152,35 @@ class IRLineFollowerWithStations(Node):
         if self.current_station == station_name:
             # Move forward for 1 second
             self.get_logger().info('Moving past station')
-            self.move_robot(self.BASE_SPEED, 0.0)
+            self.move_robot(self.BASE_SPEED * 2, 0.0)  # Increased speed to move past station
             
             # Create timer to resume normal operation after moving forward
             self._forward_timer = self.create_timer(
-                5.0,  # Move forward for 1 second
+                1.0,  # Move forward for 1 second
                 lambda: self._resume_movement_callback(station_name)
             )
 
     def _resume_movement_callback(self, station_name):
         """Resume normal operation after moving past station"""
         if self.current_station == station_name:
+            # First stop the robot
+            self.move_robot(0.0, 0.0)
+            
+            # Then cleanup timers safely
+            try:
+                if hasattr(self, '_station_timer'):
+                    self._station_timer.cancel()
+                    delattr(self, '_station_timer')
+                if hasattr(self, '_forward_timer'):
+                    self._forward_timer.cancel()
+                    delattr(self, '_forward_timer')
+            except Exception as e:
+                self.get_logger().warn(f'Timer cleanup error: {str(e)}')
+            
+            # Finally reset station status
             self.is_at_station = False
             self.current_station = None
             self.get_logger().info('Resuming line following')
-            
-            # Stop forward movement
-            self.move_robot(0.0, 0.0)
-            
-            # Cancel and cleanup timers
-            if hasattr(self, '_station_timer'):
-                self._station_timer.cancel()
-                self._station_timer.destroy()
-            if hasattr(self, '_forward_timer'):
-                self._forward_timer.cancel()
-                self._forward_timer.destroy()
 
     def ir_timer_callback(self):
         """Handle IR line following"""

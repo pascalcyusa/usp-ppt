@@ -156,7 +156,7 @@ class IRLineFollowerWithStations(Node):
             
             # Create timer to resume normal operation after moving forward
             self._forward_timer = self.create_timer(
-                1.0,  # Move forward for 1 second
+                5.0,  # Move forward for 1 second
                 lambda: self._resume_movement_callback(station_name)
             )
 

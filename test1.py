@@ -45,12 +45,14 @@ class IRLineFollowerWithStations(Node):
             "Blue Station": {
                 "lower": (100, 150, 150),
                 "upper": (130, 255, 255),
-                "color_bgr": (0, 0, 255)  # BGR color for visualization
+                "color_bgr": (0, 0, 255),  # BGR color for visualization
+                "last_detected": 0  # Timestamp of last detection
             },
             "Green Station": {
                 "lower": (35, 100, 100),    # Adjusted lower bound for green
                 "upper": (85, 255, 255),    # Adjusted upper bound for green
-                "color_bgr": (0, 255, 0)    # BGR color for visualization (Green)
+                "color_bgr": (0, 255, 0),    # BGR color for visualization (Green)
+                "last_detected": 0  # Timestamp of last detection
             }
         }
         
@@ -59,6 +61,7 @@ class IRLineFollowerWithStations(Node):
         self.is_at_station = False
         self.current_station = None
         self.station_wait_time = 3.0
+        self.color_cooldown = 5.0  # Time in seconds before same color can be detected again
         self.debug_windows = True  # Enable debug windows
         
         # ROS2 Setup
@@ -119,8 +122,10 @@ class IRLineFollowerWithStations(Node):
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_bgr, 2)
             
             # Check for station detection
-            if detected_pixels > self.color_detection_threshold:
+            current_time = time.time()
+            if detected_pixels > self.color_detection_threshold and current_time - params["last_detected"] > self.color_cooldown:
                 if not self.is_at_station:
+                    params["last_detected"] = current_time
                     self.handle_station_arrival(station_name)
         
         if self.debug_windows:

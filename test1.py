@@ -45,12 +45,12 @@ class IRLineFollowerWithStations(Node):
             "Blue Station": {
                 "lower": (100, 150, 150),
                 "upper": (130, 255, 255),
-                "color_bgr": (255, 0, 0)  # BGR color for visualization
+                "color_bgr": (0, 0, 255)  # BGR color for visualization
             },
             "Green Station": {
-                "lower": (50, 150, 150),
-                "upper": (80, 255, 255),
-                "color_bgr": (255, 0, 0)  # BGR color for visualization
+                "lower": (35, 100, 100),    # Adjusted lower bound for green
+                "upper": (85, 255, 255),    # Adjusted upper bound for green
+                "color_bgr": (0, 255, 0)    # BGR color for visualization (Green)
             }
         }
         
@@ -101,6 +101,12 @@ class IRLineFollowerWithStations(Node):
             
             # Count detected pixels
             detected_pixels = cv2.countNonZero(color_mask)
+            
+            # Get average BGR values in detected area
+            if detected_pixels > 0:
+                detected_area = cv2.bitwise_and(frame, frame, mask=color_mask)
+                bgr_values = cv2.mean(detected_area)
+                self.get_logger().info(f'{station_name} - BGR values: B:{bgr_values[0]:.1f}, G:{bgr_values[1]:.1f}, R:{bgr_values[2]:.1f} - Pixels: {detected_pixels}')
             
             # Add visualization
             detected_area = cv2.bitwise_and(frame, frame, mask=color_mask)

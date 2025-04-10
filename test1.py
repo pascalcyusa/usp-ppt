@@ -45,7 +45,7 @@ class IRLineFollowerWithStations(Node):
             "Blue Station": {
                 "lower": (100, 150, 150),
                 "upper": (130, 255, 255),
-                "color_bgr": (0, 0, 255),  # BGR color for visualization
+                "color_bgr": (0, 255, 0),  # BGR color for visualization
                 "last_detected": 0  # Timestamp of last detection
             },
             "Green Station": {

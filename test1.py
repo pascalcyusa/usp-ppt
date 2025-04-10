@@ -55,7 +55,7 @@ class IRLineFollowerWithStations(Node):
         }
         
         # Detection parameters
-        self.color_detection_threshold = 3000
+        self.color_detection_threshold = 2000
         self.is_at_station = False
         self.current_station = None
         self.station_wait_time = 5.0

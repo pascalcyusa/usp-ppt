@@ -1,14 +1,14 @@
 # Environment variables
 .env
 
+
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 
 # Virtual Environment
-venv/
-env/
+usp-ppt/
 
 # IDE
 .vscode/

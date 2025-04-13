@@ -82,32 +82,26 @@ CAMERA_ROTATION = cv2.ROTATE_180  # Adjust if camera is mounted upside down
 
 # --- Color Detection Configuration ---
 # Define HSV Lower and Upper bounds for each station's target color marker
-# --> Tune these values for your specific colors and lighting conditions <--
+# --> All stations set to detect Green color markers <--
 # Link Station Indices to their purpose and color marker
 STATION_COLORS_HSV = {
     # Index 0: Color marker to detect when returning to the start/pickup station
-    # Example: Blue
-    0: {"name": "Pickup Station", "hsv_lower": (100, 100, 50), "hsv_upper": (130, 255, 255), "color_bgr": (255, 0, 0)},
+    0: {"name": "Pickup Station", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
 
     # Index 1: Cooking Station 1 (Batter/Cook)
-    # Example: Red
-    1: {"name": "Cooking 1", "hsv_lower": (0, 100, 100), "hsv_upper": (10, 255, 255), "color_bgr": (0, 0, 255)},
+    1: {"name": "Cooking 1", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
 
-    # Index 2: Cooking Station 2 (Optional - if exists) or first topping
-    # Let's map indices 2, 3, 4 to toppings for now
-    # 2: {"name": "Cooking 2", "hsv_lower": (170, 100, 100), "hsv_upper": (180, 255, 255), "color_bgr": (0, 0, 128)}, # Example: Dark Red
+    # Index 2: Cooking Station 2
+    2: {"name": "Cooking 2", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
 
-    # Index 2: Chocolate Chips Station
-    # Example: Yellow
-    2: {"name": "Chocolate Chips", "hsv_lower": (20, 100, 100), "hsv_upper": (40, 255, 255), "color_bgr": (0, 255, 255)},
+    # Index 3: Chocolate Chips Station
+    3: {"name": "Chocolate Chips", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
 
-    # Index 3: Whipped Cream Station
-    # Example: Green
-    3: {"name": "Whipped Cream", "hsv_lower": (50, 100, 50), "hsv_upper": (80, 255, 255), "color_bgr": (0, 255, 0)},
+    # Index 4: Whipped Cream Station
+    4: {"name": "Whipped Cream", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
 
-    # Index 4: Sprinkles Station
-    # Example: Magenta/Pink
-    4: {"name": "Sprinkles", "hsv_lower": (140, 100, 50), "hsv_upper": (170, 255, 255), "color_bgr": (255, 0, 255)},
+    # Index 5: Sprinkles Station
+    5: {"name": "Sprinkles", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
 }
 # Total physical stations with markers
 NUM_STATIONS_PHYSICAL = len(STATION_COLORS_HSV)
@@ -116,12 +110,10 @@ NUM_STATIONS_PHYSICAL = len(STATION_COLORS_HSV)
 # Maps the Airtable *Status* Field Name to the Station Index it represents
 STATION_FIELD_TO_INDEX = {
     AIRTABLE_COOKING_1_STATUS_FIELD: 1,
-    AIRTABLE_COOKING_2_STATUS_FIELD: 2,  # Uncomment if using Cook 2
-    # Map Choc Chips Status field to index 2
-    AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: 2,
-    AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: 3,   # Map WC Status field to index 3
-    # Map Sprinkles Status field to index 4
-    AIRTABLE_SPRINKLES_STATUS_FIELD: 4,
+    AIRTABLE_COOKING_2_STATUS_FIELD: 2,
+    AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: 3,
+    AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: 4,
+    AIRTABLE_SPRINKLES_STATUS_FIELD: 5,
     AIRTABLE_PICKUP_STATUS_FIELD: 0           # Map Pickup Status field to index 0
 }
 # Inverse map for convenience

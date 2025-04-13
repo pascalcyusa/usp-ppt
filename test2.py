@@ -54,10 +54,9 @@ AIRTABLE_ORDER_NAME_COLUMN = "Order Name"       # Column for the order identifie
 
 # Station Status Fields (Numeric)
 AIRTABLE_COOKING_1_STATUS_FIELD = "Cooking 1 Status"
-# Assuming a second cooking step/station exists
 AIRTABLE_COOKING_2_STATUS_FIELD = "Cooking 2 Status"
 AIRTABLE_WHIPPED_CREAM_STATUS_FIELD = "Whipped Cream Status"
-AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD = "Chocolate Chips Status"
+AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD = "Choco Chips Status"
 AIRTABLE_SPRINKLES_STATUS_FIELD = "Sprinkles Status"
 AIRTABLE_PICKUP_STATUS_FIELD = "Pickup Status"
 

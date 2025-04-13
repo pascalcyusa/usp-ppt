@@ -44,18 +44,12 @@ class IRLineFollowerWithStations(Node):
 
         # Station Colors (HSV format)
         self.station_colors = {
-            "Blue Station": {
-                "lower": (100, 150, 150),
-                "upper": (130, 255, 255),
-                "color_bgr": (0, 255, 0),  # BGR color for visualization
-                "last_detected": 0  # Timestamp of last detection
-            },
             "Green Station": {
-                "lower": (35, 100, 100),    # Adjusted lower bound for green
-                "upper": (85, 255, 255),    # Adjusted upper bound for green
+                "lower": (35, 100, 100),    # Lower bound for green
+                "upper": (85, 255, 255),    # Upper bound for green
                 # BGR color for visualization (Green)
                 "color_bgr": (0, 255, 0),
-                "last_detected": 0  # Timestamp of last detection
+                "last_detected": 0          # Timestamp of last detection
             }
         }
 

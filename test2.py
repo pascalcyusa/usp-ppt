@@ -60,10 +60,10 @@ AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD = "Choco Chips Status"
 AIRTABLE_SPRINKLES_STATUS_FIELD = "Sprinkles Status"
 AIRTABLE_PICKUP_STATUS_FIELD = "Pickup Status"
 
-# Topping Requirement Fields (Numeric, assuming 1=Yes, 0=No, or similar)
-AIRTABLE_REQ_CHOCOLATE_CHIPS = "Chocolate Chips"
-AIRTABLE_REQ_WHIPPED_CREAM = "Whipped Cream"
-AIRTABLE_REQ_SPRINKLES = "Sprinkles"
+# Topping Requirements Fields (add these lines)
+AIRTABLE_REQ_CHOCOLATE_CHIPS = "Choco Chips Required"    # Add this line
+AIRTABLE_REQ_WHIPPED_CREAM = "Whipped Cream Required"    # Add this line
+AIRTABLE_REQ_SPRINKLES = "Sprinkles Required"           # Add this line
 
 # --- Airtable Status Codes (Numeric) ---
 STATUS_WAITING = 0

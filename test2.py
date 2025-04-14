@@ -96,14 +96,17 @@ STATION_COLORS_HSV = {
     # Index 1: Cooking Station
     1: {"name": "Cooking Station", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
 
-    # Index 2: Chocolate Chips Station
-    2: {"name": "Chocolate Chips", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
+    # Index 2: Robot 2 Waiting Position
+    2: {"name": "Robot 2 Wait", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
 
-    # Index 3: Whipped Cream Station
-    3: {"name": "Whipped Cream", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
+    # Index 3: Chocolate Chips Station
+    3: {"name": "Chocolate Chips", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
 
-    # Index 4: Sprinkles Station
-    4: {"name": "Sprinkles", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
+    # Index 4: Whipped Cream Station
+    4: {"name": "Whipped Cream", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
+
+    # Index 5: Sprinkles Station
+    5: {"name": "Sprinkles", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
 }
 # Total physical stations with markers
 NUM_STATIONS_PHYSICAL = len(STATION_COLORS_HSV)

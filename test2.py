@@ -773,13 +773,24 @@ class PancakeRobotNode(Node):
             if self.debug_windows and debug_frame is not None:
                 # Add IR sensor status text
                 ir_text = f"IR L: {left_ir} R: {right_ir}"
-                cv2.putText(debug_frame, ir_text, (
-                    # Black text
-                    frame.shape[1] - 150, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-                cv2.imshow("Robot View", debug_frame)
+                cv2.putText(debug_frame, ir_text, (frame.shape[1] - 150, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+                # Show both original and HSV views
+                cv2.imshow("Camera View", frame)  # Original camera feed
+                # Debug view with overlays
+                cv2.imshow("Robot View (with detection)", debug_frame)
+                cv2.imshow("HSV View", cv2.cvtColor(
+                    frame, cv2.COLOR_BGR2HSV))  # HSV conversion view
+
+                # Move windows to convenient positions
+                cv2.moveWindow("Camera View", 0, 0)
+                cv2.moveWindow("Robot View (with detection)",
+                               frame.shape[1], 0)
+                cv2.moveWindow("HSV View", 0, frame.shape[0])
+
                 if cv2.waitKey(1) & 0xFF == ord('q'):  # Allow quitting via window
                     self.get_logger().info("Quit requested via OpenCV window.")
-                    # Need to trigger proper shutdown
                     self.state = RobotState.ERROR  # Or another state to signal shutdown
                     rclpy.shutdown()  # Request ROS shutdown
 

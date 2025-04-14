@@ -484,10 +484,9 @@ class PancakeRobotNode(Node):
             f"Checking Airtable: Record {record_id}, Field '{station_field_name}' status...")
         check_url = f"{AIRTABLE_URL}/{record_id}"
 
-        # Format fields parameter correctly for Airtable API
-        fields = [station_field_name]
+        # Format fields parameter correctly for Airtable API v0
         params = {
-            "fields": fields
+            "fields[]": [station_field_name]  # Use fields[] format for v0 API
         }
 
         try:
@@ -614,20 +613,32 @@ class PancakeRobotNode(Node):
                 f"Station {self.target_station_index} ({target_field}) reported DONE (99).")
             self.play_sound([(600, 100), (800, 150)])  # Station done sound
             self.stop_airtable_polling()
-            # Transition back to main control loop logic (will be handled in next control_loop iteration)
-            # The state remains WAITING_FOR_STATION_COMPLETION, but the poll timer is stopped.
-            # Control loop will detect poll timer stopped and proceed.
+
+            # Move to next station immediately
+            self.current_sequence_index += 1
+            if self.current_sequence_index < len(self.station_sequence):
+                # More stations to visit
+                self.target_station_index = self.station_sequence[self.current_sequence_index]
+                next_station_name = STATION_COLORS_HSV[self.target_station_index]['name']
+                self.get_logger().info(
+                    f"Moving to next station: {self.target_station_index} ({next_station_name})")
+                if self.target_station_index == 0:
+                    self.state = RobotState.RETURNING_TO_PICKUP
+                else:
+                    self.state = RobotState.MOVING_TO_STATION
+            else:
+                # No more stations in sequence
+                self.state = RobotState.ORDER_COMPLETE
 
         elif current_status is None:
-            # Error occurred during check (logged in check_station_status_in_airtable)
-            # State likely set to AIRTABLE_ERROR by the check function. Stop polling.
+            # Error occurred during check
             self.get_logger().error(
                 f"Error checking status for {target_field}. Stopping polling.")
             self.stop_airtable_polling()
-            # State should already be AIRTABLE_ERROR
+            self.state = RobotState.AIRTABLE_ERROR
 
         else:
-            # Status is not DONE (could be 0, 1, or some other intermediate value)
+            # Status is not DONE (could be 0, 1, or some other value)
             self.get_logger().debug(
                 f"Waiting for {target_field} status {STATUS_DONE}, currently {current_status}.")
             # Check for timeout
@@ -638,9 +649,8 @@ class PancakeRobotNode(Node):
                 self.play_sound([(300, 500), (250, 500)])  # Timeout sound
                 self.stop_airtable_polling()
                 self.update_station_status_in_airtable(
-                    # Mark as failed (-1 or similar)
                     self.current_order["record_id"], target_field, -1)
-                self.state = RobotState.STATION_TIMED_OUT  # Go to specific timeout state
+                self.state = RobotState.STATION_TIMED_OUT
                 self.stop_moving()
 
     # --- Main Control Loop (State Machine Logic) ---

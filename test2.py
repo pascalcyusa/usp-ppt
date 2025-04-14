@@ -776,29 +776,23 @@ class PancakeRobotNode(Node):
                     angular_speed = 0.0
                     # self.get_logger().debug("IR: On Line") # Verbose
                 elif left_ir == GPIO.LOW and right_ir == GPIO.HIGH:
-                    # Left On Line (Black), Right Off Line -> Turn Right
-                    angular_speed = -BASE_ROTATE_SPEED * TURN_FACTOR
-                    linear_speed *= 0.8  # Slow down slightly when turning
-                    # self.get_logger().debug("IR: Turn Right") # Verbose
-                elif left_ir == GPIO.HIGH and right_ir == GPIO.LOW:
-                    # Left Off Line, Right On Line (Black) -> Turn Left
-                    angular_speed = BASE_ROTATE_SPEED * TURN_FACTOR
+                    # Left On Line (Black), Right Off Line -> Turn Left (changed from Right)
+                    angular_speed = BASE_ROTATE_SPEED * TURN_FACTOR  # Removed negative sign
                     linear_speed *= 0.8  # Slow down slightly when turning
                     # self.get_logger().debug("IR: Turn Left") # Verbose
+                elif left_ir == GPIO.HIGH and right_ir == GPIO.LOW:
+                    # Left Off Line, Right On Line (Black) -> Turn Right (changed from Left)
+                    angular_speed = -BASE_ROTATE_SPEED * TURN_FACTOR  # Added negative sign
+                    linear_speed *= 0.8  # Slow down slightly when turning
+                    # self.get_logger().debug("IR: Turn Right") # Verbose
                 elif left_ir == GPIO.LOW and right_ir == GPIO.LOW:
                     # Both On Line (Black) - Line Lost or Junction?
-                    # Simple recovery: Stop linear, rotate slightly (e.g., right)
+                    # Simple recovery: Stop linear, rotate slightly (changed direction)
                     self.get_logger().warn(
                         "IR: Both sensors on black (Line Lost/Junction?). Rotating slightly.")
                     linear_speed = 0.0
-                    angular_speed = -LOST_LINE_ROTATE_SPEED  # Rotate right to try and find it
-                else:
-                    # Should not happen with binary sensors, but handle defensively
-                    self.get_logger().error(
-                        f"IR: Unexpected sensor state L={left_ir} R={right_ir}. Stopping.")
-                    linear_speed = 0.0
-                    angular_speed = 0.0
-                    next_state = RobotState.ERROR
+                    # Removed negative sign for opposite recovery rotation
+                    angular_speed = LOST_LINE_ROTATE_SPEED
 
                 self.move_robot(linear_speed, angular_speed)
 

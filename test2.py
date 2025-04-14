@@ -60,16 +60,23 @@ AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD = "Choco Chips Status"
 AIRTABLE_SPRINKLES_STATUS_FIELD = "Sprinkles Status"
 AIRTABLE_PICKUP_STATUS_FIELD = "Pickup Status"
 
-# Topping Requirements Fields (add these lines)
-AIRTABLE_REQ_CHOCOLATE_CHIPS = "Choco Chips Required"    # Add this line
-AIRTABLE_REQ_WHIPPED_CREAM = "Whipped Cream Required"    # Add this line
-AIRTABLE_REQ_SPRINKLES = "Sprinkles Required"           # Add this line
-
 # --- Airtable Status Codes (Numeric) ---
 STATUS_WAITING = 0
 STATUS_ARRIVED = 1
 STATUS_DONE = 99
-# Other intermediate statuses can be used by external systems
+
+# --- Map Airtable Fields and Order Requirements to Station Indices ---
+# Maps the Airtable *Status* Field Name to the Station Index it represents
+STATION_FIELD_TO_INDEX = {
+    AIRTABLE_COOKING_1_STATUS_FIELD: 1,
+    AIRTABLE_COOKING_2_STATUS_FIELD: 2,
+    AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: 3,
+    AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: 4,
+    AIRTABLE_SPRINKLES_STATUS_FIELD: 5,
+    AIRTABLE_PICKUP_STATUS_FIELD: 0
+}
+# Inverse map for convenience
+STATION_INDEX_TO_FIELD = {v: k for k, v in STATION_FIELD_TO_INDEX.items()}
 
 # --- GPIO Configuration ---
 LEFT_IR_PIN = 16   # BOARD pin number for Left IR sensor
@@ -104,27 +111,6 @@ STATION_COLORS_HSV = {
 }
 # Total physical stations with markers
 NUM_STATIONS_PHYSICAL = len(STATION_COLORS_HSV)
-
-# --- Map Airtable Fields and Order Requirements to Station Indices ---
-# Maps the Airtable *Status* Field Name to the Station Index it represents
-STATION_FIELD_TO_INDEX = {
-    AIRTABLE_COOKING_1_STATUS_FIELD: 1,
-    AIRTABLE_COOKING_2_STATUS_FIELD: 2,
-    AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: 3,
-    AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: 4,
-    AIRTABLE_SPRINKLES_STATUS_FIELD: 5,
-    AIRTABLE_PICKUP_STATUS_FIELD: 0           # Map Pickup Status field to index 0
-}
-# Inverse map for convenience
-STATION_INDEX_TO_FIELD = {v: k for k, v in STATION_FIELD_TO_INDEX.items()}
-
-# Maps the Airtable *Requirement* Field Name to the Station Index it enables
-# Assumes value > 0 means required
-TOPPING_REQ_FIELD_TO_INDEX = {
-    AIRTABLE_REQ_CHOCOLATE_CHIPS: 2,
-    AIRTABLE_REQ_WHIPPED_CREAM: 3,
-    AIRTABLE_REQ_SPRINKLES: 4,
-}
 
 # --- Navigation & Control Parameters ---
 # Seconds (50 Hz) - How often to check IR sensors
@@ -387,10 +373,7 @@ class PancakeRobotNode(Node):
                 AIRTABLE_WHIPPED_CREAM_STATUS_FIELD,
                 AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD,
                 AIRTABLE_SPRINKLES_STATUS_FIELD,
-                AIRTABLE_PICKUP_STATUS_FIELD,
-                AIRTABLE_REQ_CHOCOLATE_CHIPS,
-                AIRTABLE_REQ_WHIPPED_CREAM,
-                AIRTABLE_REQ_SPRINKLES
+                AIRTABLE_PICKUP_STATUS_FIELD
             ]
         }
         self.get_logger().debug(f"Airtable fetch query params: {params}")
@@ -419,14 +402,9 @@ class PancakeRobotNode(Node):
                 fetched_order = {
                     "record_id": record_id,
                     "order_name": order_name,
-                    "requirements": {  # Store which toppings are needed (value > 0)
-                        AIRTABLE_REQ_CHOCOLATE_CHIPS: fields.get(AIRTABLE_REQ_CHOCOLATE_CHIPS, 0),
-                        AIRTABLE_REQ_WHIPPED_CREAM: fields.get(AIRTABLE_REQ_WHIPPED_CREAM, 0),
-                        AIRTABLE_REQ_SPRINKLES: fields.get(AIRTABLE_REQ_SPRINKLES, 0),
-                    },
                     "station_status": {  # Store current status of all stations for this order
                         AIRTABLE_COOKING_1_STATUS_FIELD: fields.get(AIRTABLE_COOKING_1_STATUS_FIELD, 0),
-                        # AIRTABLE_COOKING_2_STATUS_FIELD: fields.get(AIRTABLE_COOKING_2_STATUS_FIELD, 0),
+                        AIRTABLE_COOKING_2_STATUS_FIELD: fields.get(AIRTABLE_COOKING_2_STATUS_FIELD, 0),
                         AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: fields.get(AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD, 0),
                         AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: fields.get(AIRTABLE_WHIPPED_CREAM_STATUS_FIELD, 0),
                         AIRTABLE_SPRINKLES_STATUS_FIELD: fields.get(AIRTABLE_SPRINKLES_STATUS_FIELD, 0),
@@ -724,16 +702,12 @@ class PancakeRobotNode(Node):
             else:
                 self.get_logger().info("Planning station route for current order...")
                 self.station_sequence = []
-                # Always start with Cooking Station 1
-                self.station_sequence.append(1)
-                # Add required topping stations based on order requirements
-                for req_field, station_idx in TOPPING_REQ_FIELD_TO_INDEX.items():
-                    if self.current_order["requirements"].get(req_field, 0) > 0:
+                # Add stations based on their status fields
+                for station_field, station_idx in STATION_FIELD_TO_INDEX.items():
+                    if self.current_order["station_status"].get(station_field, 0) == STATUS_WAITING:
                         self.station_sequence.append(station_idx)
                         self.get_logger().info(
                             f" - Adding Station {station_idx} ({STATION_COLORS_HSV[station_idx]['name']})")
-                # Always end by returning to the Pickup Station
-                self.station_sequence.append(0)
 
                 self.get_logger().info(
                     f"Planned route (indices): {self.station_sequence}")

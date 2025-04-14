@@ -483,8 +483,12 @@ class PancakeRobotNode(Node):
         self.get_logger().debug(
             f"Checking Airtable: Record {record_id}, Field '{station_field_name}' status...")
         check_url = f"{AIRTABLE_URL}/{record_id}"
-        # Only request the specific field
-        params = {"fields[]": [station_field_name]}
+
+        # Format fields parameter correctly for Airtable API
+        fields = [station_field_name]
+        params = {
+            "fields": fields
+        }
 
         try:
             response = requests.get(

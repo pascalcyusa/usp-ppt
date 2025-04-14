@@ -113,19 +113,19 @@ NUM_STATIONS_PHYSICAL = len(STATION_COLORS_HSV)
 
 # --- Navigation & Control Parameters ---
 # Seconds (50 Hz) - How often to check IR sensors
-IR_POLL_RATE = 0.02
+IR_POLL_RATE = 0.001
 # Seconds (10 Hz) - How often to check camera for colors
 COLOR_POLL_RATE = 0.1
 # Seconds - How often to check Airtable for '99' status
 AIRTABLE_POLL_RATE = 2.0
 
-BASE_DRIVE_SPEED = 0.08         # m/s - Forward speed during line following
-BASE_ROTATE_SPEED = 0.5         # rad/s - Turning speed during line following
-TURN_FACTOR = 0.9               # Aggressiveness of turns based on IR
-LOST_LINE_ROTATE_SPEED = 0.3    # rad/s - Speed for rotation when line is lost
+BASE_DRIVE_SPEED = 0.01         # m/s - Forward speed during line following
+BASE_ROTATE_SPEED = 0.2         # rad/s - Turning speed during line following
+TURN_FACTOR = 0.7               # Aggressiveness of turns based on IR
+LOST_LINE_ROTATE_SPEED = 0.1    # rad/s - Speed for rotation when line is lost
 
 # Min pixels of target color to trigger detection (tune this!)
-COLOR_DETECTION_THRESHOLD = 1500
+COLOR_DETECTION_THRESHOLD = 2000
 # Min seconds before detecting the *same* station color again
 COLOR_COOLDOWN_SEC = 5.0
 # Max seconds to wait for Airtable status 99 before failing

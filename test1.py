@@ -180,15 +180,17 @@ class IRLineFollowerWithStations(Node):
         # IR line following logic
         if left_sensor == GPIO.LOW and right_sensor == GPIO.LOW:
             self.get_logger().warn('Both sensors off line!')
-            recovery_rotation = self.ROTATE_SPEED * 0.5
+            recovery_rotation = -self.ROTATE_SPEED * 0.5  # Changed sign
             self.move_robot(0.0, recovery_rotation)
         elif left_sensor == GPIO.HIGH and right_sensor == GPIO.HIGH:
             self.move_robot(linear_speed, 0.0)
         elif left_sensor == GPIO.HIGH and right_sensor == GPIO.LOW:
-            self.move_robot(linear_speed * 0.8, -
+            # Changed sign: removed negative
+            self.move_robot(linear_speed * 0.8,
                             self.ROTATE_SPEED * self.TURN_FACTOR)
         elif left_sensor == GPIO.LOW and right_sensor == GPIO.HIGH:
-            self.move_robot(linear_speed * 0.8,
+            # Changed sign: added negative
+            self.move_robot(linear_speed * 0.8, -
                             self.ROTATE_SPEED * self.TURN_FACTOR)
 
     def read_ir_sensors(self):

@@ -295,40 +295,51 @@ class PancakeRobotNode(Node):
         if target_idx not in STATION_COLORS_HSV:
             self.get_logger().warn(
                 f"Invalid target index {target_idx} for color detection.")
-            return False, None  # Return detection status and debug frame
+            return False, None
 
         color_info = STATION_COLORS_HSV[target_idx]
         lower_bound = np.array(color_info["hsv_lower"])
         upper_bound = np.array(color_info["hsv_upper"])
         target_color_name = color_info["name"]
-        # Default to white if not defined
         color_bgr = color_info.get("color_bgr", (255, 255, 255))
 
         try:
             hsv_image = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            mask = cv2.inRange(hsv_image, lower_bound, upper_bound)
 
-            # Optional: Noise reduction
-            # kernel = np.ones((5, 5), np.uint8)
-            # mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-            # mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+            # Create white background mask first (from test1)
+            white_lower = np.array([0, 0, 200])
+            white_upper = np.array([180, 30, 255])
+            white_mask = cv2.inRange(hsv_image, white_lower, white_upper)
 
-            detected_pixels = cv2.countNonZero(mask)
-            # self.get_logger().debug(f"Detecting {target_color_name} ({target_idx}): Pixels={detected_pixels}/{COLOR_DETECTION_THRESHOLD}") # Verbose
+            # Create color mask excluding white background (from test1)
+            color_mask = cv2.inRange(hsv_image, lower_bound, upper_bound)
+            color_mask = cv2.bitwise_and(
+                color_mask, cv2.bitwise_not(white_mask))
 
-            # --- Visualization (optional) ---
+            detected_pixels = cv2.countNonZero(color_mask)
+
+            # Create debug visualization
             debug_frame = None
             if self.debug_windows:
                 debug_frame = frame.copy()
-                # Create colored overlay for detected area
-                overlay = np.zeros_like(frame)
-                overlay[mask > 0] = color_bgr
-                cv2.addWeighted(debug_frame, 1, overlay, 0.5, 0, debug_frame)
-                # Add text
-                text = f"{target_color_name} ({target_idx}): {detected_pixels} px"
+
+                # Add visualization (matching test1)
+                detected_area = cv2.bitwise_and(frame, frame, mask=color_mask)
+                debug_frame = cv2.addWeighted(
+                    debug_frame, 1, detected_area, 0.5, 0)
+
+                # Add text showing detection info
+                text = f"{target_color_name}: {detected_pixels} px"
                 cv2.putText(debug_frame, text, (10, 30 + 30 * target_idx),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_bgr, 2)
-            # --- End Visualization ---
+
+                # Print BGR values if pixels detected (from test1)
+                if detected_pixels > 0:
+                    detected_area = cv2.bitwise_and(
+                        frame, frame, mask=color_mask)
+                    bgr_values = cv2.mean(detected_area)
+                    self.get_logger().info(
+                        f'{target_color_name} - BGR values: B:{bgr_values[0]:.1f}, G:{bgr_values[1]:.1f}, R:{bgr_values[2]:.1f} - Pixels: {detected_pixels}')
 
             # Check detection threshold and cooldown
             current_time = time.time()
@@ -336,11 +347,10 @@ class PancakeRobotNode(Node):
                (current_time - self.last_color_detection_times.get(target_idx, 0.0) > COLOR_COOLDOWN_SEC):
                 self.get_logger().info(
                     f"Detected {target_color_name} (Index {target_idx})!")
-                # Update last detected time
                 self.last_color_detection_times[target_idx] = current_time
                 return True, debug_frame
-            else:
-                return False, debug_frame
+
+            return False, debug_frame
 
         except cv2.error as cv_err:
             self.get_logger().error(

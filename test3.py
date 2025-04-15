@@ -287,36 +287,31 @@ class PancakeRobotNode(Node):
 
         color_info = STATION_COLORS_HSV[target_idx]
         try:
-            # Create a copy of the frame for display
-            display_frame = frame.copy()
+            # Convert to HSV
             hsv_image = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
             
-            # Create mask for green color (all stations use same green color)
-            color_mask = cv2.inRange(
-                hsv_image,
-                np.array([35, 100, 100]),  # Green HSV lower bound
-                np.array([85, 255, 255])   # Green HSV upper bound
-            )
+            # Create mask for the target color
+            lower_bound = np.array(color_info["hsv_lower"])
+            upper_bound = np.array(color_info["hsv_upper"])
+            color_mask = cv2.inRange(hsv_image, lower_bound, upper_bound)
             
-            # Apply the mask to show detected colors
-            color_detected = cv2.bitwise_and(frame, frame, mask=color_mask)
-            
-            # Draw station name and detection status
-            cv2.putText(display_frame, f"Station: {color_info['name']}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            # Draw detection box and highlight detected areas
+            # Count pixels of this color
             detected_pixels = cv2.countNonZero(color_mask)
-            cv2.putText(display_frame, f"Green Pixels: {detected_pixels}", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
-            # Find contours of detected green areas
-            contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(display_frame, contours, -1, (0, 255, 0), 2)
+            # Create visualization
+            display_frame = frame.copy()
+            
+            # Add text showing detection info
+            text = f"{color_info['name']}: {detected_pixels} px"
+            cv2.putText(display_frame, text, (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_info['color_bgr'], 2)
+            
+            # Highlight detected areas
+            color_detected = cv2.bitwise_and(frame, frame, mask=color_mask)
             
             # Show both the raw camera feed and color detection side by side
             combined_display = np.hstack((display_frame, color_detected))
-            cv2.imshow("Robot Vision - Camera Feed | Color Detection", combined_display)
+            cv2.imshow("Robot Vision", combined_display)
             cv2.waitKey(1)
             
             current_time = time.time()

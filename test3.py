@@ -291,33 +291,32 @@ class PancakeRobotNode(Node):
             display_frame = frame.copy()
             hsv_image = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
             
-            white_mask = cv2.inRange(
-                hsv_image,
-                np.array([0, 0, 200]),
-                np.array([180, 30, 255])
-            )
-            
+            # Create mask for green color (all stations use same green color)
             color_mask = cv2.inRange(
                 hsv_image,
-                np.array(color_info["hsv_lower"]),
-                np.array(color_info["hsv_upper"])
+                np.array([35, 100, 100]),  # Green HSV lower bound
+                np.array([85, 255, 255])   # Green HSV upper bound
             )
-            color_mask = cv2.bitwise_and(color_mask, cv2.bitwise_not(white_mask))
             
             # Apply the mask to show detected colors
             color_detected = cv2.bitwise_and(frame, frame, mask=color_mask)
             
             # Draw station name and detection status
             cv2.putText(display_frame, f"Station: {color_info['name']}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_info['color_bgr'], 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
+            # Draw detection box and highlight detected areas
             detected_pixels = cv2.countNonZero(color_mask)
-            cv2.putText(display_frame, f"Pixels: {detected_pixels}", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_info['color_bgr'], 2)
+            cv2.putText(display_frame, f"Green Pixels: {detected_pixels}", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
-            # Show the camera feed and color detection
-            cv2.imshow("Camera Feed", display_frame)
-            cv2.imshow("Color Detection", color_detected)
+            # Find contours of detected green areas
+            contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(display_frame, contours, -1, (0, 255, 0), 2)
+            
+            # Show both the raw camera feed and color detection side by side
+            combined_display = np.hstack((display_frame, color_detected))
+            cv2.imshow("Robot Vision - Camera Feed | Color Detection", combined_display)
             cv2.waitKey(1)
             
             current_time = time.time()
@@ -359,21 +358,30 @@ class PancakeRobotNode(Node):
                 self.state = RobotState.ALL_ORDERS_COMPLETE
 
         elif self.state == RobotState.PLANNING_ROUTE:
-            # Plan the sequence of stations to visit
-            self.station_sequence = [
-                STATION_FIELD_TO_INDEX[field]
-                for field in [
-                    AIRTABLE_COOKING_1_STATUS_FIELD,
-                    AIRTABLE_COOKING_2_STATUS_FIELD,
-                    AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD,
-                    AIRTABLE_WHIPPED_CREAM_STATUS_FIELD,
-                    AIRTABLE_SPRINKLES_STATUS_FIELD,
-                    AIRTABLE_PICKUP_STATUS_FIELD
-                ]
-                if self.current_order["station_status"][field] == STATUS_WAITING
-            ]
-            self.current_sequence_index = 0
-            self.state = RobotState.MOVING_TO_STATION
+            # First check if Station 1 (Cooking) has value of 0
+            if self.current_order["station_status"][AIRTABLE_COOKING_1_STATUS_FIELD] == STATUS_WAITING:
+                # Build sequence starting with first pancake
+                self.station_sequence = [STATION_FIELD_TO_INDEX[AIRTABLE_COOKING_1_STATUS_FIELD]]
+                
+                # Add second pancake if needed
+                if self.current_order["station_status"][AIRTABLE_COOKING_2_STATUS_FIELD] == STATUS_WAITING:
+                    self.station_sequence.append(STATION_FIELD_TO_INDEX[AIRTABLE_COOKING_2_STATUS_FIELD])
+                
+                # Add toppings stations only if their status is 0 (not 99)
+                for topping_field in [AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD,
+                                    AIRTABLE_WHIPPED_CREAM_STATUS_FIELD,
+                                    AIRTABLE_SPRINKLES_STATUS_FIELD]:
+                    if self.current_order["station_status"][topping_field] == STATUS_WAITING:
+                        self.station_sequence.append(STATION_FIELD_TO_INDEX[topping_field])
+                
+                # Always end with pickup station
+                self.station_sequence.append(STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD])
+                
+                self.current_sequence_index = 0
+                self.state = RobotState.MOVING_TO_STATION
+            else:
+                self.get_logger().info("No orders need processing at Station 1")
+                self.state = RobotState.IDLE
 
         elif self.state == RobotState.MOVING_TO_STATION:
             # Line following and color detection logic

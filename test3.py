@@ -756,31 +756,6 @@ class PancakeRobotNode(Node):
 
 # --- Main Execution Function ---
 
-
-def demo_airtable_usage():
-    # Import and initialize
-    from AirtablePancake import at
-
-    # Change Value Usage
-    at.changeValue("Cooking 1 Status", 7)
-    at.changeValue("Cooking 2 Status", 7)
-    at.changeValue("Whipped Cream Status", 7)
-    at.changeValue("Choco Chips Status", 7)
-    at.changeValue("Sprinkles Status", 7)
-    at.changeValue("Pickup Status", 7)
-
-    # Check Value Usage
-    at.checkValue("Cooking 1 Status")
-    at.checkValue("Cooking 2 Status")
-    at.checkValue("Whipped Cream Status")
-    at.checkValue("Choco Chips Status")
-    at.checkValue("Sprinkles Status")
-    at.checkValue("Pickup Status")
-
-    # Check Value Usage (saving output to a variable)
-    status = at.checkValue("Cooking 1 Status")
-
-
 def main(args=None):
     rclpy.init(args=args)
     pancake_robot_node = None
@@ -829,5 +804,5 @@ def main(args=None):
 
 
 if __name__ == '__main__':
-    demo_airtable_usage()  # Run the demo if directly executed
+    import sys
     sys.exit(main())

@@ -208,6 +208,10 @@ class PancakeRobotNode(Node):
                 self.get_logger().info(f"Detected: {name} (Phys {physical_target_idx}, Logical {self.target_station_index})!")
                 self.last_color_detection_times[physical_target_idx] = now
                 return True, debug_frame
+            # Display debug frame if enabled
+            if self.debug_windows and debug_frame is not None:
+                cv2.imshow('Color Detection Debug', debug_frame)
+                cv2.waitKey(1)  # Required for window updates
             return False, debug_frame
         except cv2.error as e: self.get_logger().error(f"OpenCV err: {e}"); return False, None
         except Exception as e: self.get_logger().error(f"Color detect err: {e}"); return False, None
@@ -269,7 +273,7 @@ class PancakeRobotNode(Node):
             self.get_logger().error("Airtable check err: missing record_id/field_name."); return None
         # self.get_logger().debug(f"Checking Airtable: Rec {record_id}, Field {station_field_name}") # Too verbose for polling
         check_url = f"{AIRTABLE_URL}/{record_id}"
-        params = {"fields[]": station_field_name} # Request only the specific field
+        params = {"fields[]":[station_field_name]} # Request only the specific field
         try:
             response = requests.get(check_url, headers=AIRTABLE_HEADERS, params=params, timeout=10)
             response.raise_for_status(); data = response.json()

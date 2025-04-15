@@ -47,6 +47,7 @@ AIRTABLE_HEADERS = {
 
 # --- Field names in your Airtable base (MUST match exactly, case-sensitive) ---
 AIRTABLE_ORDER_NAME_COLUMN = "Order Name"       # Column for the order identifier
+AIRTABLE_CREATED_TIME_FIELD = "Created"   # Column for order creation timestamp
 
 # Station Status Fields (Numeric)
 AIRTABLE_COOKING_1_STATUS_FIELD = "Cooking 1 Status"
@@ -364,17 +365,19 @@ class PancakeRobotNode(Node):
 
         # Find an order where the first required step (Cooking 1) is WAITING (0)
         # and Pickup is also WAITING (0) - implies not completed or picked up yet.
-        # Sort by Order Name to get a consistent order if multiple are available.
+        # Sort by Created time to get oldest orders first
         params = {
             "maxRecords": 1,
             "filterByFormula": f"AND({{{AIRTABLE_COOKING_1_STATUS_FIELD}}}=0, {{{AIRTABLE_PICKUP_STATUS_FIELD}}}=0)",
-            "sort[0][field]": AIRTABLE_ORDER_NAME_COLUMN,
+            # Sort by creation time instead of name
+            "sort[0][field]": AIRTABLE_CREATED_TIME_FIELD,
             "sort[0][direction]": "asc",
             # Request only the fields we need
             "fields[]": [
                 AIRTABLE_ORDER_NAME_COLUMN,
+                AIRTABLE_CREATED_TIME_FIELD,  # Add Created field
                 AIRTABLE_COOKING_1_STATUS_FIELD,
-                AIRTABLE_ROBOT2_WAIT_STATUS_FIELD,  # Fetch even if not used, for completeness
+                AIRTABLE_ROBOT2_WAIT_STATUS_FIELD,
                 AIRTABLE_WHIPPED_CREAM_STATUS_FIELD,
                 AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD,
                 AIRTABLE_SPRINKLES_STATUS_FIELD,
@@ -386,7 +389,7 @@ class PancakeRobotNode(Node):
         try:
             response = requests.get(
                 url=AIRTABLE_URL, headers=AIRTABLE_HEADERS, params=params, timeout=15)
-            response.raise_for_status()  # Raises HTTPError for bad responses (4xx or 5xx)
+            response.raise_for_status()
             data = response.json()
             self.get_logger().debug(
                 f"Airtable fetch response: {json.dumps(data, indent=2)}")
@@ -397,6 +400,7 @@ class PancakeRobotNode(Node):
                 record_id = record.get("id")
                 fields = record.get("fields", {})
                 order_name = fields.get(AIRTABLE_ORDER_NAME_COLUMN)
+                created_time = fields.get(AIRTABLE_CREATED_TIME_FIELD)
 
                 if not record_id or not order_name:
                     self.get_logger().error(
@@ -407,7 +411,8 @@ class PancakeRobotNode(Node):
                 fetched_order = {
                     "record_id": record_id,
                     "order_name": order_name,
-                    "station_status": {  # Store current status of all stations for this order
+                    "created_time": created_time,  # Store creation timestamp
+                    "station_status": {
                         AIRTABLE_COOKING_1_STATUS_FIELD: fields.get(AIRTABLE_COOKING_1_STATUS_FIELD, 0),
                         AIRTABLE_ROBOT2_WAIT_STATUS_FIELD: fields.get(AIRTABLE_ROBOT2_WAIT_STATUS_FIELD, 0),
                         AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: fields.get(AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD, 0),
@@ -417,7 +422,7 @@ class PancakeRobotNode(Node):
                     }
                 }
                 self.get_logger().info(
-                    f"Fetched order: '{order_name}' (Record ID: {record_id})")
+                    f"Fetched order: '{order_name}' (Created: {created_time}, Record ID: {record_id})")
                 self.get_logger().debug(f"Order details: {fetched_order}")
                 return fetched_order
             else:

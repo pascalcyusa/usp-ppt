@@ -50,7 +50,12 @@ class at:
     #       value: the value you would like to change the station status to. 
     #   Returns: N/A 
     def changeValue(self, station, value):
-
+        """Change the value of a station field for the current order.
+        
+        Args:
+            station (str): The station field name to update
+            value (int): The new value to set
+        """
         current_order = 0
 
         params = {

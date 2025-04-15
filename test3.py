@@ -142,6 +142,9 @@ class PancakeRobotNode(Node):
         super().__init__('pancake_robot_node')
         self.get_logger().info("Pancake Robot Node Initializing...")
 
+        # Initialize AirtablePancake instance
+        self.at = AirtablePancake()
+
         # Robot State Initialization
         self.state = RobotState.IDLE
         # Stores details: {'record_id': ..., 'order_name': ..., 'required_stations': [...], 'station_status': {...}}

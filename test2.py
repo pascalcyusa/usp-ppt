@@ -55,7 +55,7 @@ AIRTABLE_ORDER_NAME_COLUMN = "Order Name"       # Column for the order identifie
 # Station Status Fields (Numeric)
 AIRTABLE_COOKING_1_STATUS_FIELD = "Cooking 1 Status"
 # Status for the second pancake of the same order
-AIRTABLE_ROBOT2_WAIT_STATUS_FIELD = "Cooking 2 Status"
+AIRTABLE_COOKING_2_STATUS_FIELD = "Cooking 2 Status"
 AIRTABLE_WHIPPED_CREAM_STATUS_FIELD = "Whipped Cream Status"
 AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD = "Choco Chips Status"
 AIRTABLE_SPRINKLES_STATUS_FIELD = "Sprinkles Status"
@@ -70,7 +70,7 @@ STATUS_DONE = 99
 # Maps the Airtable *Status* Field Name to the Station Index it represents
 STATION_FIELD_TO_INDEX = {
     AIRTABLE_COOKING_1_STATUS_FIELD: 1,
-    AIRTABLE_ROBOT2_WAIT_STATUS_FIELD: 1,  # Same station as Cooking 1 (for second pancake)
+    AIRTABLE_COOKING_2_STATUS_FIELD: 1,  # Same station as Cooking 1 (for second pancake)
     AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: 3,
     AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: 4,
     AIRTABLE_SPRINKLES_STATUS_FIELD: 5,
@@ -375,7 +375,7 @@ class PancakeRobotNode(Node):
             "fields[]": [
                 AIRTABLE_ORDER_NAME_COLUMN,
                 AIRTABLE_COOKING_1_STATUS_FIELD,
-                AIRTABLE_ROBOT2_WAIT_STATUS_FIELD,  # Fetch even if not used, for completeness
+                AIRTABLE_COOKING_2_STATUS_FIELD,  # Fetch even if not used, for completeness
                 AIRTABLE_WHIPPED_CREAM_STATUS_FIELD,
                 AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD,
                 AIRTABLE_SPRINKLES_STATUS_FIELD,
@@ -410,7 +410,7 @@ class PancakeRobotNode(Node):
                     "order_name": order_name,
                     "station_status": {  # Store current status of all stations for this order
                         AIRTABLE_COOKING_1_STATUS_FIELD: fields.get(AIRTABLE_COOKING_1_STATUS_FIELD, 0),
-                        AIRTABLE_ROBOT2_WAIT_STATUS_FIELD: fields.get(AIRTABLE_ROBOT2_WAIT_STATUS_FIELD, 0),
+                        AIRTABLE_COOKING_2_STATUS_FIELD: fields.get(AIRTABLE_COOKING_2_STATUS_FIELD, 0),
                         AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: fields.get(AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD, 0),
                         AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: fields.get(AIRTABLE_WHIPPED_CREAM_STATUS_FIELD, 0),
                         AIRTABLE_SPRINKLES_STATUS_FIELD: fields.get(AIRTABLE_SPRINKLES_STATUS_FIELD, 0),

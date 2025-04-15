@@ -338,7 +338,7 @@ class PancakeRobotNode(Node):
 
         try:
             # Check the first order with Pickup Status != 99
-            pickup_status = at.checkValue(AIRTABLE_PICKUP_STATUS_FIELD)
+            pickup_status = self.at.checkValue(AIRTABLE_PICKUP_STATUS_FIELD)
             if pickup_status != STATUS_DONE:  # If not 99
                 # Initialize order data structure
                 order = {
@@ -353,7 +353,7 @@ class PancakeRobotNode(Node):
                               AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD,
                               AIRTABLE_SPRINKLES_STATUS_FIELD,
                               AIRTABLE_PICKUP_STATUS_FIELD]:
-                    status = at.checkValue(field)
+                    status = self.at.checkValue(field)
                     order["station_status"][field] = status
 
                 return order

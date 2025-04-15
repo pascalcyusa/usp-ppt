@@ -476,48 +476,43 @@ class PancakeRobotNode(Node):
     def check_station_status_in_airtable(self, record_id, station_field_name):
         """Checks the current numeric status of a specific station field for an order."""
         if not record_id or not station_field_name:
-            self.get_logger().error(
-                "Cannot check Airtable status: record_id or station_field_name missing.")
-            return None  # Return None to indicate check failure
+            self.get_logger().error("Cannot check Airtable status: missing parameters")
+            return None
 
-        self.get_logger().debug(
-            f"Checking Airtable: Record {record_id}, Field '{station_field_name}' status...")
         check_url = f"{AIRTABLE_URL}/{record_id}"
 
-        # Format fields parameter correctly for Airtable API v0
-        params = {
-            "fields[]": [station_field_name]  # Use fields[] format for v0 API
-        }
+        # Add debug logging
+        self.get_logger().info(f"Checking Airtable status at URL: {check_url}")
+        self.get_logger().info(f"Looking for field: {station_field_name}")
 
         try:
             response = requests.get(
-                check_url, headers=AIRTABLE_HEADERS, params=params, timeout=10)
+                check_url,
+                headers=AIRTABLE_HEADERS,
+                params={"fields[]": [station_field_name]},
+                timeout=10
+            )
             response.raise_for_status()
             data = response.json()
+
+            # Add debug logging
+            self.get_logger().info(f"Airtable response: {data}")
+
             fields = data.get("fields", {})
-            # Will be None if field doesn't exist or isn't set
             status_value = fields.get(station_field_name)
 
-            if status_value is not None:
-                self.get_logger().debug(
-                    f"Airtable check successful: Status for '{station_field_name}' is {status_value}.")
-                # Update local cache
-                if self.current_order and self.current_order["record_id"] == record_id:
-                    if station_field_name in self.current_order["station_status"]:
-                        self.current_order["station_status"][station_field_name] = status_value
-                return status_value
-            else:
-                self.get_logger().warn(
-                    f"Field '{station_field_name}' not found or not set for record {record_id}.")
-                return None  # Explicitly return None if field is missing/null
+            # Convert to integer if possible
+            try:
+                status_value = int(status_value)
+            except (TypeError, ValueError):
+                self.get_logger().error(
+                    f"Invalid status value: {status_value}")
+                return None
 
-        except requests.exceptions.RequestException as req_err:
-            self.log_airtable_error(
-                f"check status for {station_field_name}", req_err)
-            return None
+            return status_value
+
         except Exception as e:
-            self.get_logger().error(
-                f"Unexpected error during Airtable status check: {e}")
+            self.get_logger().error(f"Error checking Airtable status: {e}")
             return None
 
     def log_airtable_error(self, action_description, request_exception):
@@ -559,16 +554,11 @@ class PancakeRobotNode(Node):
 
     # --- Airtable Polling for Completion ---
     def start_airtable_polling(self):
-        """Creates and starts the timer to poll Airtable for station completion."""
-        if self.airtable_poll_timer is not None and not self.airtable_poll_timer.is_canceled():
-            self.get_logger().warn("Airtable polling timer already active.")
-            return
-
         self.get_logger().info(
             f"Starting Airtable polling timer (every {AIRTABLE_POLL_RATE}s) for station {self.target_station_index} completion.")
         self.airtable_poll_timer = self.create_timer(
             AIRTABLE_POLL_RATE, self.airtable_poll_callback)
-        self.wait_start_time = time.time()  # Record when we started waiting
+        self.wait_start_time = time.time()
 
     def stop_airtable_polling(self):
         """Cancels and destroys the Airtable polling timer."""
@@ -587,71 +577,39 @@ class PancakeRobotNode(Node):
             self.stop_airtable_polling()
             return
 
-        if not self.current_order or self.target_station_index < 0:
-            self.get_logger().error(
-                "Polling error: No current order or invalid target station index.")
-            self.state = RobotState.ERROR
-            self.stop_airtable_polling()
-            self.stop_moving()
-            return
-
         target_field = STATION_INDEX_TO_FIELD.get(self.target_station_index)
-        if not target_field:
-            self.get_logger().error(
-                f"Polling error: No Airtable field mapped for station index {self.target_station_index}.")
-            self.state = RobotState.ERROR
-            self.stop_airtable_polling()
-            self.stop_moving()
-            return
+
+        # Add debug logging
+        self.get_logger().info(
+            f"Polling Airtable for station {self.target_station_index} ({target_field})")
 
         # Check Airtable for the status
         current_status = self.check_station_status_in_airtable(
             self.current_order["record_id"], target_field)
 
-        if current_status == STATUS_DONE:
+        # Add debug logging
+        self.get_logger().info(
+            f"Current status from Airtable: {current_status}")
+
+        if current_status == STATUS_DONE:  # This is 99
             self.get_logger().info(
-                f"Station {self.target_station_index} ({target_field}) reported DONE (99).")
-            self.play_sound([(600, 100), (800, 150)])  # Station done sound
+                f"Station {self.target_station_index} reported DONE (99)!")
+            self.play_sound([(600, 100), (800, 150)])
             self.stop_airtable_polling()
 
-            # Move to next station immediately
+            # Move to next station
             self.current_sequence_index += 1
             if self.current_sequence_index < len(self.station_sequence):
-                # More stations to visit
                 self.target_station_index = self.station_sequence[self.current_sequence_index]
                 next_station_name = STATION_COLORS_HSV[self.target_station_index]['name']
                 self.get_logger().info(
                     f"Moving to next station: {self.target_station_index} ({next_station_name})")
+
+                # Important: Set the next state explicitly
                 if self.target_station_index == 0:
                     self.state = RobotState.RETURNING_TO_PICKUP
                 else:
                     self.state = RobotState.MOVING_TO_STATION
-            else:
-                # No more stations in sequence
-                self.state = RobotState.ORDER_COMPLETE
-
-        elif current_status is None:
-            # Error occurred during check
-            self.get_logger().error(
-                f"Error checking status for {target_field}. Stopping polling.")
-            self.stop_airtable_polling()
-            self.state = RobotState.AIRTABLE_ERROR
-
-        else:
-            # Status is not DONE (could be 0, 1, or some other value)
-            self.get_logger().debug(
-                f"Waiting for {target_field} status {STATUS_DONE}, currently {current_status}.")
-            # Check for timeout
-            elapsed_time = time.time() - self.wait_start_time
-            if elapsed_time > STATION_WAIT_TIMEOUT_SEC:
-                self.get_logger().error(
-                    f"TIMEOUT: Station {self.target_station_index} ({target_field}) did not reach status {STATUS_DONE} within {STATION_WAIT_TIMEOUT_SEC} seconds.")
-                self.play_sound([(300, 500), (250, 500)])  # Timeout sound
-                self.stop_airtable_polling()
-                self.update_station_status_in_airtable(
-                    self.current_order["record_id"], target_field, -1)
-                self.state = RobotState.STATION_TIMED_OUT
-                self.stop_moving()
 
     # --- Main Control Loop (State Machine Logic) ---
     def control_loop(self):

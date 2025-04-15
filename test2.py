@@ -54,7 +54,7 @@ AIRTABLE_ORDER_NAME_COLUMN = "Order Name"       # Column for the order identifie
 
 # Station Status Fields (Numeric)
 AIRTABLE_COOKING_1_STATUS_FIELD = "Cooking 1 Status"
-# Status for Robot 2 waiting position
+# Status for the second pancake of the same order
 AIRTABLE_ROBOT2_WAIT_STATUS_FIELD = "Cooking 2 Status"
 AIRTABLE_WHIPPED_CREAM_STATUS_FIELD = "Whipped Cream Status"
 AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD = "Choco Chips Status"
@@ -70,7 +70,7 @@ STATUS_DONE = 99
 # Maps the Airtable *Status* Field Name to the Station Index it represents
 STATION_FIELD_TO_INDEX = {
     AIRTABLE_COOKING_1_STATUS_FIELD: 1,
-    AIRTABLE_ROBOT2_WAIT_STATUS_FIELD: 2,  # Station 2 is Robot 2's waiting position
+    AIRTABLE_ROBOT2_WAIT_STATUS_FIELD: 1,  # Same station as Cooking 1 (for second pancake)
     AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: 3,
     AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: 4,
     AIRTABLE_SPRINKLES_STATUS_FIELD: 5,
@@ -93,11 +93,8 @@ STATION_COLORS_HSV = {
     # Index 0: Color marker to detect when returning to the start/pickup station
     0: {"name": "Pickup Station", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
 
-    # Index 1: Cooking Station
+    # Index 1: Cooking Station (handles both first and second pancakes)
     1: {"name": "Cooking Station", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
-
-    # Index 2: Robot 2 Waiting Position
-    2: {"name": "Robot 2 Wait", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
 
     # Index 3: Chocolate Chips Station
     3: {"name": "Chocolate Chips", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},

@@ -61,8 +61,8 @@ STATUS_DONE = 99
 
 # --- Map Airtable Fields and Order Requirements to Station Indices ---
 STATION_FIELD_TO_INDEX = {
-    AIRTABLE_COOKING_1_STATUS_FIELD: 1,
-    AIRTABLE_COOKING_2_STATUS_FIELD: 1,  # Same station as Cooking 1
+    AIRTABLE_COOKING_1_STATUS_FIELD: 1,  # First cooking station
+    AIRTABLE_COOKING_2_STATUS_FIELD: 2,  # Second cooking station
     AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: 3,
     AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: 4,
     AIRTABLE_SPRINKLES_STATUS_FIELD: 5,
@@ -287,6 +287,8 @@ class PancakeRobotNode(Node):
 
         color_info = STATION_COLORS_HSV[target_idx]
         try:
+            # Create a copy of the frame for display
+            display_frame = frame.copy()
             hsv_image = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
             
             white_mask = cv2.inRange(
@@ -302,15 +304,29 @@ class PancakeRobotNode(Node):
             )
             color_mask = cv2.bitwise_and(color_mask, cv2.bitwise_not(white_mask))
             
-            detected_pixels = cv2.countNonZero(color_mask)
-            current_time = time.time()
+            # Apply the mask to show detected colors
+            color_detected = cv2.bitwise_and(frame, frame, mask=color_mask)
             
+            # Draw station name and detection status
+            cv2.putText(display_frame, f"Station: {color_info['name']}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_info['color_bgr'], 2)
+            
+            detected_pixels = cv2.countNonZero(color_mask)
+            cv2.putText(display_frame, f"Pixels: {detected_pixels}", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_info['color_bgr'], 2)
+            
+            # Show the camera feed and color detection
+            cv2.imshow("Camera Feed", display_frame)
+            cv2.imshow("Color Detection", color_detected)
+            cv2.waitKey(1)
+            
+            current_time = time.time()
             if detected_pixels > COLOR_DETECTION_THRESHOLD and \
                (current_time - self.last_color_detection_times.get(target_idx, 0.0) > COLOR_COOLDOWN_SEC):
                 self.last_color_detection_times[target_idx] = current_time
-                return True, frame
-                
-            return False, frame
+                return True, display_frame
+            
+            return False, display_frame
             
         except Exception as e:
             self.get_logger().error(f"Color detection error: {e}")

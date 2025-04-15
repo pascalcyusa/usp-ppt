@@ -3,10 +3,6 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
-# Keep for potential future use of actions
-from rclpy.executors import SingleThreadedExecutor
-# For sensor subscriptions if needed later
-from rclpy.qos import qos_profile_sensor_data
 
 import os
 from dotenv import load_dotenv

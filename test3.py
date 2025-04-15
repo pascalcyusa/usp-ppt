@@ -301,10 +301,14 @@ class PancakeRobotNode(Node):
             # Create visualization
             display_frame = frame.copy()
             
-            # Add text showing detection info
-            text = f"{color_info['name']}: {detected_pixels} px"
+            # Add text showing detection info and current target
+            text = f"Target: {color_info['name']} ({detected_pixels} px)"
             cv2.putText(display_frame, text, (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_info['color_bgr'], 2)
+            
+            # Add current state info
+            cv2.putText(display_frame, f"State: {self.state.name}", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
             # Highlight detected areas
             color_detected = cv2.bitwise_and(frame, frame, mask=color_mask)
@@ -345,6 +349,17 @@ class PancakeRobotNode(Node):
 
     def control_loop(self):
         """Main control loop for the robot."""
+        # Always capture and display camera feed regardless of state
+        try:
+            frame = self.picam2.capture_array()
+            if self.target_station_index in STATION_COLORS_HSV:
+                color_detected, _ = self.check_for_station_color(frame, self.target_station_index)
+                if color_detected and self.state == RobotState.MOVING_TO_STATION:
+                    self.stop_moving()
+                    self.state = RobotState.ARRIVED_AT_STATION
+        except Exception as e:
+            self.get_logger().error(f"Camera error in control loop: {e}")
+
         if self.state == RobotState.IDLE:
             self.current_order = self.fetch_order_from_airtable()
             if self.current_order:
@@ -379,26 +394,27 @@ class PancakeRobotNode(Node):
                 self.state = RobotState.IDLE
 
         elif self.state == RobotState.MOVING_TO_STATION:
-            # Line following and color detection logic
+            # Line following logic
             left_val, right_val = self.read_ir_sensors()
-            frame = self.picam2.capture_array()
             
-            target_idx = self.station_sequence[self.current_sequence_index]
-            color_detected, _ = self.check_for_station_color(frame, target_idx)
+            # Update target station index
+            self.target_station_index = self.station_sequence[self.current_sequence_index]
             
-            if color_detected:
-                self.stop_moving()
-                self.state = RobotState.ARRIVED_AT_STATION
-            else:
-                # Basic line following
-                if not left_val and not right_val:  # Both sensors on line
-                    self.move_robot(BASE_DRIVE_SPEED, 0.0)
-                elif not left_val:  # Left sensor on line
-                    self.move_robot(BASE_DRIVE_SPEED, -BASE_ROTATE_SPEED)
-                elif not right_val:  # Right sensor on line
-                    self.move_robot(BASE_DRIVE_SPEED, BASE_ROTATE_SPEED)
-                else:  # Both sensors off line
+            # Basic line following with improved turning
+            if not left_val and not right_val:  # Both sensors on line
+                self.move_robot(BASE_DRIVE_SPEED, 0.0)
+            elif not left_val:  # Left sensor on line
+                self.move_robot(BASE_DRIVE_SPEED * 0.8, -BASE_ROTATE_SPEED * 1.2)
+            elif not right_val:  # Right sensor on line
+                self.move_robot(BASE_DRIVE_SPEED * 0.8, BASE_ROTATE_SPEED * 1.2)
+            else:  # Both sensors off line
+                # Implement a more systematic search pattern
+                current_time = time.time()
+                search_phase = int(current_time) % 4
+                if search_phase < 2:
                     self.move_robot(0.0, LOST_LINE_ROTATE_SPEED)
+                else:
+                    self.move_robot(0.0, -LOST_LINE_ROTATE_SPEED)
 
         elif self.state == RobotState.ARRIVED_AT_STATION:
             current_station = self.station_sequence[self.current_sequence_index]

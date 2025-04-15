@@ -762,12 +762,12 @@ def demo_airtable_usage():
     from AirtablePancake import at
 
     # Change Value Usage
-    at.changeValue("Cooking 1 Status", 7)
-    at.changeValue("Cooking 2 Status", 7)
-    at.changeValue("Whipped Cream Status", 7)
-    at.changeValue("Choco Chips Status", 7)
-    at.changeValue("Sprinkles Status", 7)
-    at.changeValue("Pickup Status", 7)
+    at.changeValue("Cooking 1 Status", "7")
+    at.changeValue("Cooking 2 Status", "7")
+    at.changeValue("Whipped Cream Status", "7")
+    at.changeValue("Choco Chips Status", "7")
+    at.changeValue("Sprinkles Status", "7")
+    at.changeValue("Pickup Status", "7")
 
     # Check Value Usage
     at.checkValue("Cooking 1 Status")

@@ -21,8 +21,11 @@ from irobot_create_msgs.action import DriveDistance, RotateAngle
 from builtin_interfaces.msg import Duration
 from irobot_create_msgs.msg import AudioNoteVector, AudioNote
 
+
 # Import AirtablePancake for database operations
-from AirtablePancake import at
+from AirtablePancake 
+
+at = AirtablePancake.at()
 
 # --- Configuration Constants ---
 

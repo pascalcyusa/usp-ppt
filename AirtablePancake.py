@@ -64,7 +64,7 @@ class at:
             # Find the current order by checking for a pickup status of 0
             for record in data['records']:
                 if record['fields'].get("Pickup Status") != 99:
-                    print(f"Current Order is: {record.get("id")}, Order Name: {record['fields'].get("Order Name")}")
+                    print(f"Current Order is: {record.get('id')}, Order Name: {record['fields'].get('Order Name')}")
                     current_order = record.get("id")
                     break
         else:

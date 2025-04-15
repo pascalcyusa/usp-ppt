@@ -23,9 +23,8 @@ from irobot_create_msgs.msg import AudioNoteVector, AudioNote
 
 
 # Import AirtablePancake for database operations
-from AirtablePancake 
+from AirtablePancake import AirtablePancake
 
-at = AirtablePancake.at()
 
 # --- Configuration Constants ---
 

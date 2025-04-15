@@ -322,7 +322,7 @@ class PancakeRobotNode(Node):
         for frequency, duration in notes:
             note = AudioNote()
             note.frequency = frequency
-            note.max_runtime = Duration(sec=duration/1000)
+            note.max_runtime = Duration(sec=int(duration/1000))
             note_msg.notes.append(note)
         self.audio_publisher.publish(note_msg)
 

@@ -475,45 +475,51 @@ class PancakeRobotNode(Node):
             return False
 
     def check_station_status_in_airtable(self, record_id, station_field_name):
-        """Checks the current numeric status of a specific station field for an order."""
+        """Checks if a specific station's status field has been marked as DONE (99)."""
         if not record_id or not station_field_name:
-            self.get_logger().error("Cannot check Airtable status: missing parameters")
+            self.get_logger().error(
+                "Cannot check Airtable: record_id or station_field_name missing.")
             return None
 
-        check_url = f"{AIRTABLE_URL}/{record_id}"
-
-        # Add debug logging
-        self.get_logger().info(f"Checking Airtable status at URL: {check_url}")
+        self.get_logger().info(
+            f"Polling Airtable for station {STATION_FIELD_TO_INDEX.get(station_field_name)} ({station_field_name})")
+        self.get_logger().info(
+            f"Checking Airtable status at URL: {AIRTABLE_URL}/{record_id}")
         self.get_logger().info(f"Looking for field: {station_field_name}")
 
         try:
+            # Request only the specific field we're interested in using proper field encoding
             response = requests.get(
-                check_url,
+                url=f"{AIRTABLE_URL}/{record_id}",
                 headers=AIRTABLE_HEADERS,
-                params={"fields[]": [station_field_name]},
-                timeout=10
+                timeout=15
             )
             response.raise_for_status()
             data = response.json()
 
-            # Add debug logging
-            self.get_logger().info(f"Airtable response: {data}")
-
-            fields = data.get("fields", {})
-            status_value = fields.get(station_field_name)
-
-            # Convert to integer if possible
-            try:
-                status_value = int(status_value)
-            except (TypeError, ValueError):
+            if not data or "fields" not in data:
                 self.get_logger().error(
-                    f"Invalid status value: {status_value}")
+                    f"Unexpected Airtable response format: {data}")
                 return None
 
-            return status_value
+            fields = data.get("fields", {})
+            status = fields.get(station_field_name)
 
+            if status is None:
+                self.get_logger().warn(
+                    f"Field {station_field_name} not found in response: {fields}")
+                return None
+
+            self.get_logger().info(
+                f"Current status for {station_field_name}: {status}")
+            return status
+
+        except requests.exceptions.RequestException as req_err:
+            self.log_airtable_error("check", req_err)
+            return None
         except Exception as e:
-            self.get_logger().error(f"Error checking Airtable status: {e}")
+            self.get_logger().error(
+                f"Unexpected error checking Airtable status: {e}")
             return None
 
     def log_airtable_error(self, action_description, request_exception):

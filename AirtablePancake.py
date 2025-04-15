@@ -2,7 +2,7 @@
 # Dylan Chen
 import requests
 
-class at:
+class AirtablePancake:
 
     # INITIALIZER FUNCTION
     #   Initializer for the airtable class. Defines the Airtable API Key, Base ID, Table Name, url, and headers. 

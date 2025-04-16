@@ -256,7 +256,11 @@ class PancakeRobotNode(Node):
     def move_robot(self, linear_x, angular_z):
         """Publishes Twist messages to control robot velocity."""
         if self.state in [RobotState.ERROR, RobotState.CAMERA_ERROR, RobotState.GPIO_ERROR, RobotState.AIRTABLE_ERROR]:
-            self.stop_moving()
+            # Ensure robot stops if entering an error state
+            twist_msg = Twist()
+            twist_msg.linear.x = 0.0
+            twist_msg.angular.z = 0.0
+            self.cmd_vel_pub.publish(twist_msg)
             return
 
         twist_msg = Twist()
@@ -280,64 +284,76 @@ class PancakeRobotNode(Node):
             self.get_logger().error(f"IR sensor read error: {e}")
             return GPIO.HIGH, GPIO.HIGH
 
+    # --- Color Detection ---
     def check_for_station_color(self, frame, target_idx):
-        """Detects station color markers in camera frame."""
+        """Analyzes a frame for the target station's color marker."""
         if target_idx not in STATION_COLORS_HSV:
+            self.get_logger().warn(
+                f"Invalid target index {target_idx} for color detection.")
             return False, None
 
         color_info = STATION_COLORS_HSV[target_idx]
+        lower_bound = np.array(color_info["hsv_lower"])
+        upper_bound = np.array(color_info["hsv_upper"])
+        target_color_name = color_info["name"]
+        color_bgr = color_info.get("color_bgr", (255, 255, 255))
+
         try:
-            # Convert to HSV
             hsv_image = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            
-            # Create mask for the target color
-            lower_bound = np.array(color_info["hsv_lower"])
-            upper_bound = np.array(color_info["hsv_upper"])
+
+            # Create white background mask first (from test1)
+            white_lower = np.array([0, 0, 200])
+            white_upper = np.array([180, 30, 255])
+            white_mask = cv2.inRange(hsv_image, white_lower, white_upper)
+
+            # Create color mask excluding white background (from test1)
             color_mask = cv2.inRange(hsv_image, lower_bound, upper_bound)
-            
-            # Count pixels of this color
+            color_mask = cv2.bitwise_and(
+                color_mask, cv2.bitwise_not(white_mask))
+
             detected_pixels = cv2.countNonZero(color_mask)
-            
-            # Create visualization
-            display_frame = frame.copy()
-            
-            # Add text showing detection info and current target
-            text = f"Target: {color_info['name']} ({detected_pixels} px)"
-            cv2.putText(display_frame, text, (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_info['color_bgr'], 2)
-            
-            # Add current state info
-            cv2.putText(display_frame, f"State: {self.state.name}", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            # Highlight detected areas
-            color_detected = cv2.bitwise_and(frame, frame, mask=color_mask)
-            
-            # Show raw camera feed and color detection in separate windows
-            try:
-                cv2.imshow("Camera Feed", display_frame)
-                cv2.imshow("Color Detection", color_detected)
-                cv2.waitKey(1)
-            except cv2.error as cv_err:
-                self.get_logger().error(f"OpenCV display error: {cv_err}")
-                # Destroy windows and try to recreate them
-                cv2.destroyAllWindows()
-            
+
+            # Create debug visualization
+            debug_frame = None
+            if self.debug_windows:
+                debug_frame = frame.copy()
+
+                # Add visualization (matching test1)
+                detected_area = cv2.bitwise_and(frame, frame, mask=color_mask)
+                debug_frame = cv2.addWeighted(
+                    debug_frame, 1, detected_area, 0.5, 0)
+
+                # Add text showing detection info
+                text = f"{target_color_name}: {detected_pixels} px"
+                cv2.putText(debug_frame, text, (10, 30 + 30 * target_idx),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_bgr, 2)
+
+                # Print BGR values if pixels detected (from test1)
+                if detected_pixels > 0:
+                    detected_area = cv2.bitwise_and(
+                        frame, frame, mask=color_mask)
+                    bgr_values = cv2.mean(detected_area)
+                    self.get_logger().info(
+                        f'{target_color_name} - BGR values: B:{bgr_values[0]:.1f}, G:{bgr_values[1]:.1f}, R:{bgr_values[2]:.1f} - Pixels: {detected_pixels}')
+
+            # Check detection threshold and cooldown
             current_time = time.time()
             if detected_pixels > COLOR_DETECTION_THRESHOLD and \
                (current_time - self.last_color_detection_times.get(target_idx, 0.0) > COLOR_COOLDOWN_SEC):
+                self.get_logger().info(
+                    f"Detected {target_color_name} (Index {target_idx})!")
                 self.last_color_detection_times[target_idx] = current_time
-                return True, display_frame
-            
-            return False, display_frame
-            
+                return True, debug_frame
+
+            return False, debug_frame
+
         except cv2.error as cv_err:
-            self.get_logger().error(f"OpenCV processing error: {cv_err}")
-            cv2.destroyAllWindows()
+            self.get_logger().error(
+                f"OpenCV error during color detection: {cv_err}")
             return False, None
         except Exception as e:
-            self.get_logger().error(f"Color detection error: {e}")
-            cv2.destroyAllWindows()
+            self.get_logger().error(
+                f"Unexpected error during color detection: {e}")
             return False, None
 
     def play_sound(self, notes):
@@ -362,22 +378,13 @@ class PancakeRobotNode(Node):
         # Always capture and display camera feed regardless of state
         try:
             frame = self.picam2.capture_array()
-            if frame is None:
-                self.get_logger().error("Failed to capture camera frame")
-                return
-                
             if self.target_station_index in STATION_COLORS_HSV:
-                try:
-                    color_detected, _ = self.check_for_station_color(frame, self.target_station_index)
-                    if color_detected and self.state == RobotState.MOVING_TO_STATION:
-                        self.stop_moving()
-                        self.state = RobotState.ARRIVED_AT_STATION
-                except Exception as e:
-                    self.get_logger().error(f"Color detection error in control loop: {e}")
-                    cv2.destroyAllWindows()
+                color_detected, _ = self.check_for_station_color(frame, self.target_station_index)
+                if color_detected and self.state == RobotState.MOVING_TO_STATION:
+                    self.stop_moving()
+                    self.state = RobotState.ARRIVED_AT_STATION
         except Exception as e:
             self.get_logger().error(f"Camera error in control loop: {e}")
-            cv2.destroyAllWindows()
 
         if self.state == RobotState.IDLE:
             self.current_order = self.fetch_order_from_airtable()

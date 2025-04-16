@@ -568,7 +568,7 @@ class PancakeRobotNode(Node):
                 ):
                     self.station_sequence.append(1)
                 else:
-                    self.get_logger().error(f"Order invalid start.")
+                    self.get_logger().error("Order invalid start.")
                     self.state = RobotState.IDLE
                     self.current_order = None
                     return
@@ -632,7 +632,7 @@ class PancakeRobotNode(Node):
                     self.target_station_index == -1
                     or self.current_sequence_index >= len(self.station_sequence)
                 ):
-                    self.get_logger().error(f"MOVING: Invalid target/index.")
+                    self.get_logger().error("MOVING: Invalid target/index.")
                     self.stop_moving()
                     self.state = RobotState.ERROR
                     return
@@ -722,7 +722,6 @@ class PancakeRobotNode(Node):
                     ):
                         self.get_logger().info(f"Station {idx} ({field}) DONE.")
                         self.play_sound([(659, 150), (784, 200)])
-                        last_idx = self.current_sequence_index
                         self.current_sequence_index += 1
                         if self.current_sequence_index >= len(
                             self.station_sequence

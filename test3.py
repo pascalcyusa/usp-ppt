@@ -313,9 +313,9 @@ class PancakeRobotNode(Node):
             # Highlight detected areas
             color_detected = cv2.bitwise_and(frame, frame, mask=color_mask)
             
-            # Show both the raw camera feed and color detection side by side
-            combined_display = np.hstack((display_frame, color_detected))
-            cv2.imshow("Robot Vision", combined_display)
+            # Show raw camera feed and color detection in separate windows
+            cv2.imshow("Camera Feed", display_frame)
+            cv2.imshow("Color Detection", color_detected)
             cv2.waitKey(1)
             
             current_time = time.time()

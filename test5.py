@@ -289,15 +289,8 @@ class PancakeRobotNode(Node):
                     else: # Line lost, BIASED search
                         self.get_logger().debug("Line lost, biased search...")
                         now = time.time()
-                        # --- Corrected Biased Search Logic (2:1 Right:Left) ---
-                        # Bias towards RIGHT turns (Clockwise / Negative angular.z)
-                        if int(now) % 3 != 2: # Corresponds to modulo 0 and 1 (Runs 2/3 of the time)
-                             self.get_logger().debug("...biased search: turning RIGHT")
-                             self.move_robot(0.0, -LOST_LINE_ROTATE_SPEED) # Turn Right (Negative angular.z)
-                        else: # Corresponds to modulo 2 (Runs 1/3 of the time)
-                             self.get_logger().debug("...biased search: turning LEFT")
-                             self.move_robot(0.0, LOST_LINE_ROTATE_SPEED)  # Turn Left (Positive angular.z)
-                        # --- End Corrected Biased Search Logic ---
+                        # --- Right-Only Search Logic ---
+                        self.get_logger().debug("...search: RIGHT"); self.move_robot(0.0, LOST_LINE_ROTATE_SPEED)  # Turn Right
                 else: # At least one sensor ON line (HIGH)
                     if not self.initial_line_found: self.get_logger().info("Initial line found!"); self.initial_line_found = True
                     # Normal Line Following (HIGH=ON)

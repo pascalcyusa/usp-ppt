@@ -314,9 +314,14 @@ class PancakeRobotNode(Node):
             color_detected = cv2.bitwise_and(frame, frame, mask=color_mask)
             
             # Show raw camera feed and color detection in separate windows
-            cv2.imshow("Camera Feed", display_frame)
-            cv2.imshow("Color Detection", color_detected)
-            cv2.waitKey(1)
+            try:
+                cv2.imshow("Camera Feed", display_frame)
+                cv2.imshow("Color Detection", color_detected)
+                cv2.waitKey(1)
+            except cv2.error as cv_err:
+                self.get_logger().error(f"OpenCV display error: {cv_err}")
+                # Destroy windows and try to recreate them
+                cv2.destroyAllWindows()
             
             current_time = time.time()
             if detected_pixels > COLOR_DETECTION_THRESHOLD and \
@@ -326,8 +331,13 @@ class PancakeRobotNode(Node):
             
             return False, display_frame
             
+        except cv2.error as cv_err:
+            self.get_logger().error(f"OpenCV processing error: {cv_err}")
+            cv2.destroyAllWindows()
+            return False, None
         except Exception as e:
             self.get_logger().error(f"Color detection error: {e}")
+            cv2.destroyAllWindows()
             return False, None
 
     def play_sound(self, notes):
@@ -352,13 +362,22 @@ class PancakeRobotNode(Node):
         # Always capture and display camera feed regardless of state
         try:
             frame = self.picam2.capture_array()
+            if frame is None:
+                self.get_logger().error("Failed to capture camera frame")
+                return
+                
             if self.target_station_index in STATION_COLORS_HSV:
-                color_detected, _ = self.check_for_station_color(frame, self.target_station_index)
-                if color_detected and self.state == RobotState.MOVING_TO_STATION:
-                    self.stop_moving()
-                    self.state = RobotState.ARRIVED_AT_STATION
+                try:
+                    color_detected, _ = self.check_for_station_color(frame, self.target_station_index)
+                    if color_detected and self.state == RobotState.MOVING_TO_STATION:
+                        self.stop_moving()
+                        self.state = RobotState.ARRIVED_AT_STATION
+                except Exception as e:
+                    self.get_logger().error(f"Color detection error in control loop: {e}")
+                    cv2.destroyAllWindows()
         except Exception as e:
             self.get_logger().error(f"Camera error in control loop: {e}")
+            cv2.destroyAllWindows()
 
         if self.state == RobotState.IDLE:
             self.current_order = self.fetch_order_from_airtable()

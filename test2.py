@@ -3,7 +3,9 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
+# Keep for potential future use of actions
 from rclpy.executors import SingleThreadedExecutor
+# For sensor subscriptions if needed later
 from rclpy.qos import qos_profile_sensor_data
 
 import os
@@ -11,18 +13,22 @@ from dotenv import load_dotenv
 import time
 from enum import Enum, auto
 import math
-import cv2
+import cv2  # OpenCV for image processing
 import numpy as np
-from picamera2 import Picamera2
-from libcamera import controls, Transform # Import Transform for rotation
-import requests
-import json
-import RPi.GPIO as GPIO
-from geometry_msgs.msg import Twist
+from picamera2 import Picamera2  # Pi Camera library
+from libcamera import controls  # For camera controls like autofocus
+import requests  # For Airtable API calls
+import json     # For Airtable API calls
+import RPi.GPIO as GPIO  # For IR Sensors
+from geometry_msgs.msg import Twist  # For direct velocity control
 
+# iRobot Create 3 specific messages (Keep Actions for potential fine-tuning/docking later)
 from irobot_create_msgs.action import DriveDistance, RotateAngle
+# from irobot_create_msgs.msg import InterfaceButtons, IrIntensityVector # Example sensor msgs
 from builtin_interfaces.msg import Duration
 from irobot_create_msgs.msg import AudioNoteVector, AudioNote
+
+# --- Configuration Constants ---
 
 # Load environment variables from .env file
 load_dotenv()
@@ -33,7 +39,6 @@ AIRTABLE_BASE_ID = os.getenv('AIRTABLE_BASE_ID')
 AIRTABLE_TABLE_NAME = os.getenv('AIRTABLE_TABLE_NAME')
 
 if not all([AIRTABLE_API_TOKEN, AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME]):
-    print("FATAL: Missing required Airtable environment variables. Please check your .env file.")
     raise EnvironmentError(
         "Missing required Airtable environment variables. Please check your .env file.")
 
@@ -44,11 +49,12 @@ AIRTABLE_HEADERS = {
     "Content-Type": "application/json",
 }
 
-# --- Field names in Airtable base (MUST match exactly, case-sensitive) ---
+# --- Field names in your Airtable base (MUST match exactly, case-sensitive) ---
 AIRTABLE_ORDER_NAME_COLUMN = "Order Name"       # Column for the order identifier
 
 # Station Status Fields (Numeric)
 AIRTABLE_COOKING_1_STATUS_FIELD = "Cooking 1 Status"
+# Status for the second pancake of the same order
 AIRTABLE_COOKING_2_STATUS_FIELD = "Cooking 2 Status"
 AIRTABLE_WHIPPED_CREAM_STATUS_FIELD = "Whipped Cream Status"
 AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD = "Choco Chips Status"
@@ -61,671 +67,896 @@ STATUS_ARRIVED = 1
 STATUS_DONE = 99
 
 # --- Map Airtable Fields and Order Requirements to Station Indices ---
+# Maps the Airtable *Status* Field Name to the Station Index it represents
 STATION_FIELD_TO_INDEX = {
     AIRTABLE_COOKING_1_STATUS_FIELD: 1,
-    AIRTABLE_COOKING_2_STATUS_FIELD: 2, # NOTE: Index 2 still needs an entry in STATION_COLORS_HSV for visual stop
+    AIRTABLE_COOKING_2_STATUS_FIELD: 1,  # Same station as Cooking 1 (for second pancake)
     AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: 3,
     AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: 4,
     AIRTABLE_SPRINKLES_STATUS_FIELD: 5,
     AIRTABLE_PICKUP_STATUS_FIELD: 0
 }
+# Inverse map for convenience
 STATION_INDEX_TO_FIELD = {v: k for k, v in STATION_FIELD_TO_INDEX.items()}
 
-# --- Hardware Configuration ---
-LEFT_IR_PIN = 16
-RIGHT_IR_PIN = 18
-IR_LINE_DETECT_SIGNAL = GPIO.LOW # Assume LOW signal means the sensor is OVER the line
-IR_OFF_LINE_SIGNAL = GPIO.HIGH
+# --- GPIO Configuration ---
+LEFT_IR_PIN = 16   # BOARD pin number for Left IR sensor
+RIGHT_IR_PIN = 18  # BOARD pin number for Right IR sensor
 
-CAMERA_RESOLUTION = (640, 480)
-CAMERA_TRANSFORM = Transform(hflip=True, vflip=True) # Equivalent to cv2.ROTATE_180
+# --- Camera Configuration ---
+CAMERA_RESOLUTION = (640, 480)  # Width, Height
+CAMERA_ROTATION = cv2.ROTATE_180  # Adjust if camera is mounted upside down
 
-# --- Color Detection Configuration (Using SAME GREEN for ALL stations) ---
-COMMON_HSV_LOWER = (35, 100, 100)
-COMMON_HSV_UPPER = (85, 255, 255)
-COMMON_COLOR_BGR = (0, 255, 0) # BGR for Green
-
+# --- Color Detection Configuration ---
+# Define HSV Lower and Upper bounds for each station's target color marker
 STATION_COLORS_HSV = {
-    # Index 0: Pickup Station
-    0: {"name": "Pickup Station", "hsv_lower": COMMON_HSV_LOWER, "hsv_upper": COMMON_HSV_UPPER, "color_bgr": COMMON_COLOR_BGR},
-    # Index 1: Cooking Station 1
-    1: {"name": "Cooking Station 1", "hsv_lower": COMMON_HSV_LOWER, "hsv_upper": COMMON_HSV_UPPER, "color_bgr": COMMON_COLOR_BGR},
-    # --- Index 2: Cooking Station 2 - ADDED entry for visual stop ---
-    # If Cooking Station 2 needs a visual stop, it needs an entry here. Using common green.
-    2: {"name": "Cooking Station 2", "hsv_lower": COMMON_HSV_LOWER, "hsv_upper": COMMON_HSV_UPPER, "color_bgr": COMMON_COLOR_BGR},
-    # Index 3: Chocolate Chips
-    3: {"name": "Chocolate Chips", "hsv_lower": COMMON_HSV_LOWER, "hsv_upper": COMMON_HSV_UPPER, "color_bgr": COMMON_COLOR_BGR},
-    # Index 4: Whipped Cream
-    4: {"name": "Whipped Cream", "hsv_lower": COMMON_HSV_LOWER, "hsv_upper": COMMON_HSV_UPPER, "color_bgr": COMMON_COLOR_BGR},
-    # Index 5: Sprinkles
-    5: {"name": "Sprinkles", "hsv_lower": COMMON_HSV_LOWER, "hsv_upper": COMMON_HSV_UPPER, "color_bgr": COMMON_COLOR_BGR},
-}
+    # Index 0: Color marker to detect when returning to the start/pickup station
+    0: {"name": "Pickup Station", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
 
-# --- Navigation & Control Parameters (User Specified Values) ---
-# NOTE: Polling rates below are descriptive targets. Actual checks depend on the main control loop frequency (20Hz)
-# and specific logic (e.g., Airtable check uses modulo timing).
-IR_POLL_RATE = 0.001            # Target: Seconds (1000 Hz) - How often to check IR sensors (Actual: every loop, ~50ms)
-COLOR_POLL_RATE = 0.1             # Target: Seconds (10 Hz) - How often to check camera for colors (Actual: every loop, ~50ms)
-AIRTABLE_POLL_RATE = 2.0          # Target: Seconds - How often to check Airtable for '99' status (Actual: approx this rate via modulo)
+    # Index 1: Cooking Station (handles both first and second pancakes)
+    1: {"name": "Cooking Station", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
+
+    # Index 3: Chocolate Chips Station
+    3: {"name": "Chocolate Chips", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
+
+    # Index 4: Whipped Cream Station
+    4: {"name": "Whipped Cream", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
+
+    # Index 5: Sprinkles Station
+    5: {"name": "Sprinkles", "hsv_lower": (35, 100, 100), "hsv_upper": (85, 255, 255), "color_bgr": (255, 0, 0)},
+}
+# Total physical stations with markers
+NUM_STATIONS_PHYSICAL = len(STATION_COLORS_HSV)
+
+# --- Navigation & Control Parameters ---
+# Seconds (50 Hz) - How often to check IR sensors
+IR_POLL_RATE = 0.001
+# Seconds (10 Hz) - How often to check camera for colors
+COLOR_POLL_RATE = 0.1
+# Seconds - How often to check Airtable for '99' status
+AIRTABLE_POLL_RATE = 2.0
 
 BASE_DRIVE_SPEED = 0.01         # m/s - Forward speed during line following
 BASE_ROTATE_SPEED = 0.2         # rad/s - Turning speed during line following
-TURN_FACTOR = 0.7               # Multiplier for speed reduction during turns
+TURN_FACTOR = 0.7               # Aggressiveness of turns based on IR
 LOST_LINE_ROTATE_SPEED = 0.1    # rad/s - Speed for rotation when line is lost
 
-COLOR_DETECTION_THRESHOLD = 2000  # Min pixels of target color to trigger detection
-COLOR_COOLDOWN_SEC = 5.0        # Min seconds before detecting the *same* station color again
-STATION_WAIT_TIMEOUT_SEC = 120.0  # Max seconds to wait for Airtable status 99 before failing
+# Min pixels of target color to trigger detection (tune this!)
+COLOR_DETECTION_THRESHOLD = 2000
+# Min seconds before detecting the *same* station color again
+COLOR_COOLDOWN_SEC = 5.0
+# Max seconds to wait for Airtable status 99 before failing
+STATION_WAIT_TIMEOUT_SEC = 120.0
+
+# --- State Machine Definition ---
 
 
 class RobotState(Enum):
     IDLE = auto()
     FETCHING_ORDER = auto()
-    PLANNING_ROUTE = auto()
+    PLANNING_ROUTE = auto()         # New state to determine station sequence for the order
     MOVING_TO_STATION = auto()
-    ARRIVED_AT_STATION = auto()
-    WAITING_FOR_STATION_COMPLETION = auto()
-    STATION_TIMED_OUT = auto()
+    # LINE_FOLLOWING - Merged into MOVING_TO_STATION
+    # STOPPING_BEFORE_PROCESS - Renamed
+    ARRIVED_AT_STATION = auto()     # State after detecting color and stopping
+    # PROCESSING_AT_STATION - Renamed
+    WAITING_FOR_STATION_COMPLETION = auto()  # Waiting for Airtable status 99
+    STATION_TIMED_OUT = auto()      # Station took too long to complete
+    RETURNING_TO_PICKUP = auto()    # Moving back towards station 0
+    # STOPPING_BEFORE_IDLE - Renamed
+    ARRIVED_AT_PICKUP = auto()      # Final stop state before checking next order
+    # Intermediate state after finishing all steps for one order
     ORDER_COMPLETE = auto()
-    ALL_ORDERS_COMPLETE = auto()
-    ERROR = auto()
-    CAMERA_ERROR = auto()
-    AIRTABLE_ERROR = auto()
-    GPIO_ERROR = auto()
+    ALL_ORDERS_COMPLETE = auto()    # Finished all available orders in Airtable
+    ERROR = auto()                  # General runtime error
+    CAMERA_ERROR = auto()           # Camera initialization failed
+    AIRTABLE_ERROR = auto()         # Airtable communication error or config issue
+    GPIO_ERROR = auto()             # GPIO setup failed
+    # LINE_LOST - Handled within MOVING_TO_STATION for now
+
+# --- Main Robot Control Class ---
+
 
 class PancakeRobotNode(Node):
     def __init__(self):
         super().__init__('pancake_robot_node')
         self.get_logger().info("Pancake Robot Node Initializing...")
 
-        # Initialize robot state and variables
+        # Airtable Configuration Check (Basic)
+        if "YOUR_" in AIRTABLE_API_TOKEN or "YOUR_" in AIRTABLE_BASE_ID:
+            self.get_logger().warn("="*60)
+            self.get_logger().warn(
+                "!!! POSSIBLE AIRTABLE CONFIG ISSUE: Default token/base ID detected.")
+            self.get_logger().warn("Please verify AIRTABLE_API_TOKEN and AIRTABLE_BASE_ID.")
+            self.get_logger().warn("="*60)
+            # self.state = RobotState.AIRTABLE_ERROR # Optional: Halt on potential config error
+            # return
+
+        # Robot State Initialization
         self.state = RobotState.IDLE
+        # Stores details: {'record_id': ..., 'order_name': ..., 'required_stations': [...], 'station_status': {...}}
         self.current_order = None
+        # Ordered list of station indices to visit for the current order [1, 3, 4, 0]
         self.station_sequence = []
-        self.current_sequence_index = -1
+        self.current_sequence_index = 0  # Index into self.station_sequence
+        # Physical station index we are currently moving towards/at
         self.target_station_index = -1
-        self.last_color_detection_times = {idx: 0.0 for idx in STATION_COLORS_HSV.keys()}
-        self.wait_start_time = 0.0
-        self.picam2 = None
-        self.debug_windows = True # Control OpenCV display windows
+        self.pancakes_made_count = 0
+        self.last_color_detection_times = {
+            idx: 0.0 for idx in STATION_COLORS_HSV.keys()}
+        self.wait_start_time = 0.0  # Timestamp when waiting for station completion started
 
-        # Initialize hardware
-        self._init_hardware()
-        if self.state in [RobotState.GPIO_ERROR, RobotState.CAMERA_ERROR]:
-            self.get_logger().fatal("Hardware initialization failed. Node cannot operate.")
-            return
-
-        # Initialize ROS2 publishers and clients
-        self._init_ros2()
-        if self.state == RobotState.ERROR: # Check if ROS init failed
-             self.get_logger().fatal("ROS2 component initialization failed. Node cannot operate.")
-             self.cleanup_hardware() # Cleanup GPIO/Camera if ROS failed
-             return
-
-        # Initialize timers (Control loop runs at 20Hz)
-        self.control_timer = self.create_timer(0.05, self.control_loop) # 0.05 seconds = 20 Hz
-
-        self.get_logger().info("Pancake Robot Node Initialized and Ready.")
-        self.play_sound([(440, 150), (550, 200)])
-
-    def _init_hardware(self):
-        """Initialize GPIO and Camera"""
-        # GPIO Setup
+        # --- Hardware Setup ---
+        # GPIO (IR Sensors)
         try:
-            GPIO.setmode(GPIO.BOARD)
+            GPIO.setmode(GPIO.BOARD)  # Use physical pin numbering
             GPIO.setup(LEFT_IR_PIN, GPIO.IN)
             GPIO.setup(RIGHT_IR_PIN, GPIO.IN)
-            self.get_logger().info(f"GPIO initialized (Pins: L={LEFT_IR_PIN}, R={RIGHT_IR_PIN}). Expecting {IR_LINE_DETECT_SIGNAL} on line.")
+            self.get_logger().info(
+                f"GPIO initialized (Pins: L={LEFT_IR_PIN}, R={RIGHT_IR_PIN}).")
         except Exception as e:
             self.get_logger().error(f"FATAL: Failed to initialize GPIO: {e}")
             self.state = RobotState.GPIO_ERROR
             return
 
-        # Camera Setup
+        # Camera (Picamera2)
         try:
             self.picam2 = Picamera2()
             config = self.picam2.create_preview_configuration(
-                main={"size": CAMERA_RESOLUTION},
-                transform=CAMERA_TRANSFORM
-            )
+                main={"size": CAMERA_RESOLUTION})
             self.picam2.configure(config)
-            self.picam2.set_controls({"AfMode": controls.AfModeEnum.Continuous, "LensPosition": 0.0})
+            self.picam2.set_controls(
+                {"AfMode": controls.AfModeEnum.Continuous, "LensPosition": 0.0})
             self.picam2.start()
-            time.sleep(2) # Allow camera warmup
+            time.sleep(2)  # Allow camera to initialize and focus
             self.get_logger().info("Pi Camera initialized successfully.")
-            if self.debug_windows:
-                cv2.namedWindow("Camera Feed")
-                cv2.namedWindow("Color Detection Mask")
+            self.debug_windows = True  # Enable/disable OpenCV display windows
         except Exception as e:
-            self.get_logger().error(f"FATAL: Failed to initialize Pi Camera: {e}", exc_info=True)
+            self.get_logger().error(
+                f"FATAL: Failed to initialize Pi Camera: {e}")
+            # Attempt GPIO cleanup before setting error state
             self.cleanup_gpio()
             self.state = RobotState.CAMERA_ERROR
             return
 
-    def _init_ros2(self):
-        """Initialize ROS2 publishers and action clients"""
-        try:
-            self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-            self.audio_publisher = self.create_publisher(AudioNoteVector, '/cmd_audio', 10)
-            self.drive_client = ActionClient(self, DriveDistance, '/drive_distance')
-            self.rotate_client = ActionClient(self, RotateAngle, '/rotate_angle')
-            # TODO: Check if action servers are available using wait_for_server?
-            self.get_logger().info("ROS2 publishers and action clients initialized.")
-        except Exception as e:
-            self.get_logger().error(f"FATAL: Failed to initialize ROS2 components: {e}")
-            self.state = RobotState.ERROR # Use general error for ROS issues
+        # ROS2 Publishers & Clients
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.audio_publisher = self.create_publisher(
+            AudioNoteVector, '/cmd_audio', 10)
+        # Keep Action Clients for potential future use (e.g., precise docking, recovery)
+        self.drive_client = ActionClient(
+            self, DriveDistance, '/drive_distance')
+        self.rotate_client = ActionClient(self, RotateAngle, '/rotate_angle')
 
+        # Check Action Servers (optional if not immediately used)
+        # if not self.drive_client.wait_for_server(timeout_sec=2.0):
+        #     self.get_logger().warn('DriveDistance action server not available.')
+        # if not self.rotate_client.wait_for_server(timeout_sec=2.0):
+        #     self.get_logger().warn('RotateAngle action server not available.')
 
-    def fetch_order_from_airtable(self):
-        """Fetches the oldest order where Cooking 1 is WAITING and Pickup is WAITING."""
-        self.get_logger().info("Attempting to fetch order from Airtable...")
-        try:
-            params = {
-                "maxRecords": 1,
-                "filterByFormula": f"AND({{{AIRTABLE_COOKING_1_STATUS_FIELD}}}=0, {{{AIRTABLE_PICKUP_STATUS_FIELD}}}=0)",
-                "sort[0][field]": AIRTABLE_ORDER_NAME_COLUMN,
-                "sort[0][direction]": "asc"
-            }
-            response = requests.get(url=AIRTABLE_URL, headers=AIRTABLE_HEADERS, params=params, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            records = data.get("records", [])
+        # Timers
+        # Combined timer for IR + Color + State Logic? Or separate? Let's try combined first.
+        # Seconds (20 Hz) - Should be fast enough for IR + Color checks
+        self.control_timer_period = 0.05
+        self.control_timer = self.create_timer(
+            self.control_timer_period, self.control_loop)
 
-            if not records:
-                self.get_logger().info("No pending orders found matching criteria.")
-                return None
+        # Separate timer for slower Airtable polling when waiting
+        self.airtable_poll_timer = None  # Will be created/destroyed as needed
 
-            record = records[0]
-            record_id = record.get("id")
-            fields = record.get("fields", {})
-            order_name = fields.get(AIRTABLE_ORDER_NAME_COLUMN)
+        self.get_logger().info("Pancake Robot Node Initialized and Ready.")
+        self.play_sound([(440, 200), (550, 300)])  # Startup sound
 
-            if not record_id or not order_name:
-                self.get_logger().error(f"Airtable record missing ID or Order Name: {record}")
-                return None
-
-            self.get_logger().info(f"Fetched order '{order_name}' (Record ID: {record_id}).")
-            return {
-                "record_id": record_id,
-                "order_name": order_name,
-                "station_status": {
-                    field: fields.get(field, 0) for field in STATION_FIELD_TO_INDEX.keys()
-                }
-            }
-        except requests.exceptions.Timeout:
-            self.get_logger().error("Airtable request timed out.")
-            self.state = RobotState.AIRTABLE_ERROR
-            return None
-        except requests.exceptions.RequestException as e:
-            self.get_logger().error(f"Airtable fetch error: {e}")
-            self.state = RobotState.AIRTABLE_ERROR
-            return None
-        except Exception as e:
-            self.get_logger().error(f"Unexpected error during Airtable fetch: {e}", exc_info=True)
-            self.state = RobotState.AIRTABLE_ERROR
-            return None
-
-    def update_station_status(self, record_id, station_field_name, new_status_code):
-        """Updates a specific station's status for an order in Airtable."""
-        if not record_id or not station_field_name:
-            self.get_logger().error("Cannot update Airtable status: Missing record_id or station_field_name")
-            return False
-
-        update_data = {"fields": {station_field_name: new_status_code}}
-        url = f"{AIRTABLE_URL}/{record_id}"
-        self.get_logger().info(f"Updating Airtable: {url} -> {station_field_name} = {new_status_code}")
-        try:
-            response = requests.patch(url=url, headers=AIRTABLE_HEADERS, json=update_data, timeout=10)
-            response.raise_for_status()
-            self.get_logger().info(f"Airtable update successful for {station_field_name}.")
-            return True
-        except requests.exceptions.Timeout:
-            self.get_logger().error(f"Airtable update request timed out for {station_field_name}.")
-            self.state = RobotState.AIRTABLE_ERROR
-            return False
-        except requests.exceptions.RequestException as e:
-            self.get_logger().error(f"Failed to update Airtable status for {station_field_name}: {e}")
-            try: self.get_logger().error(f"Airtable response content: {response.text}")
-            except: pass
-            self.state = RobotState.AIRTABLE_ERROR
-            return False
-        except Exception as e:
-            self.get_logger().error(f"Unexpected error during Airtable update: {e}", exc_info=True)
-            self.state = RobotState.AIRTABLE_ERROR
-            return False
-
-    def wait_for_station_completion(self, record_id, station_field_name):
-        """Checks if a station's status in Airtable is DONE (99). Returns True/False."""
-        if not record_id or not station_field_name:
-            self.get_logger().error("Cannot check Airtable status: Missing record_id or station_field_name")
-            return False
-        url = f"{AIRTABLE_URL}/{record_id}"
-        try:
-            response = requests.get(url=url, headers=AIRTABLE_HEADERS, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            current_status = data.get('fields', {}).get(station_field_name)
-            return current_status == STATUS_DONE
-        except requests.exceptions.Timeout:
-            self.get_logger().warning(f"Airtable status check request timed out for {station_field_name}.")
-            return False # Don't assume done on timeout
-        except requests.exceptions.RequestException as e:
-            self.get_logger().error(f"Error checking Airtable station status ({station_field_name}): {e}")
-            return False # Assume not done if check fails
-        except Exception as e:
-            self.get_logger().error(f"Unexpected error during Airtable status check: {e}", exc_info=True)
-            return False
-
+    # --- Movement Control ---
     def move_robot(self, linear_x, angular_z):
         """Publishes Twist messages to control robot velocity."""
-        if self.state in [RobotState.ERROR, RobotState.CAMERA_ERROR, RobotState.GPIO_ERROR, RobotState.AIRTABLE_ERROR] or not self.cmd_vel_pub:
+        if self.state in [RobotState.ERROR, RobotState.CAMERA_ERROR, RobotState.GPIO_ERROR, RobotState.AIRTABLE_ERROR]:
+            # Ensure robot stops if entering an error state
             twist_msg = Twist()
             twist_msg.linear.x = 0.0
             twist_msg.angular.z = 0.0
-            if self.cmd_vel_pub: self.cmd_vel_pub.publish(twist_msg)
+            self.cmd_vel_pub.publish(twist_msg)
             return
 
         twist_msg = Twist()
         twist_msg.linear.x = float(linear_x)
         twist_msg.angular.z = float(angular_z)
         self.cmd_vel_pub.publish(twist_msg)
+        # self.get_logger().debug(f"Publishing cmd_vel: Lin={linear_x:.2f}, Ang={angular_z:.2f}") # Verbose
 
     def stop_moving(self):
-        """Stops the robot movement reliably."""
-        # self.get_logger().info("Stopping robot...") # Reduced verbosity
-        for _ in range(3):
-            self.move_robot(0.0, 0.0)
-            time.sleep(0.02)
+        """Sends a zero velocity Twist message to stop the robot."""
+        self.get_logger().info("Sending stop command (Twist zero).")
+        self.move_robot(0.0, 0.0)
+        # Add a small delay to ensure the message is sent and processed
+        time.sleep(0.1)
 
+    # --- Sensor Reading ---
     def read_ir_sensors(self):
-        """Reads the state of the IR line sensors. Returns (left_on_line, right_on_line)."""
+        """Reads the state of the left and right IR sensors."""
         try:
             left_val = GPIO.input(LEFT_IR_PIN)
             right_val = GPIO.input(RIGHT_IR_PIN)
-            left_on_line = (left_val == IR_LINE_DETECT_SIGNAL)
-            right_on_line = (right_val == IR_LINE_DETECT_SIGNAL)
-            return left_on_line, right_on_line
+            # self.get_logger().debug(f"IR Sensors: L={left_val}, R={right_val}") # Verbose
+            # Assuming LOW means ON LINE (detecting black), HIGH means OFF LINE (detecting white/floor)
+            # Adjust this logic based on your sensor type (active low/high)
+            return left_val, right_val
         except Exception as e:
-            self.get_logger().error(f"IR sensor read error: {e}")
-            return False, False # Assume off line on error
+            self.get_logger().error(f"Error reading GPIO IR sensors: {e}")
+            # Consider transitioning to ERROR or GPIO_ERROR state if persistent
+            return GPIO.HIGH, GPIO.HIGH  # Default to off-line state on error
 
+    # --- Color Detection ---
     def check_for_station_color(self, frame, target_idx):
-        """
-        Detects station color markers (now common green) in camera frame.
-        Returns: (detected_flag, display_frame, mask_frame)
-        """
-        detected_flag = False
-        display_frame = frame.copy()
-        mask_frame = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
-
-        cv2.putText(display_frame, f"State: {self.state.name}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
+        """Analyzes a frame for the target station's color marker."""
         if target_idx not in STATION_COLORS_HSV:
-            cv2.putText(display_frame, f"Target: Invalid ({target_idx})", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-            return False, display_frame, mask_frame
+            self.get_logger().warn(
+                f"Invalid target index {target_idx} for color detection.")
+            return False, None
 
-        # Get specific station name, but use common color info
         color_info = STATION_COLORS_HSV[target_idx]
-        target_name = color_info['name']
-        # Use common color definitions directly
-        target_bgr = COMMON_COLOR_BGR
-        lower_bound = np.array(COMMON_HSV_LOWER)
-        upper_bound = np.array(COMMON_HSV_UPPER)
+        lower_bound = np.array(color_info["hsv_lower"])
+        upper_bound = np.array(color_info["hsv_upper"])
+        target_color_name = color_info["name"]
+        color_bgr = color_info.get("color_bgr", (255, 255, 255))
 
         try:
             hsv_image = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+            # Create white background mask first (from test1)
+            white_lower = np.array([0, 0, 200])
+            white_upper = np.array([180, 30, 255])
+            white_mask = cv2.inRange(hsv_image, white_lower, white_upper)
+
+            # Create color mask excluding white background (from test1)
             color_mask = cv2.inRange(hsv_image, lower_bound, upper_bound)
-            mask_frame = color_mask
+            color_mask = cv2.bitwise_and(
+                color_mask, cv2.bitwise_not(white_mask))
+
             detected_pixels = cv2.countNonZero(color_mask)
 
-            # Visualization
-            text = f"Target: {target_name} ({detected_pixels} px)"
-            cv2.putText(display_frame, text, (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, target_bgr, 2) # Use target_bgr (green)
+            # Create debug visualization
+            debug_frame = None
+            if self.debug_windows:
+                debug_frame = frame.copy()
 
-            # Detection Logic
+                # Add visualization (matching test1)
+                detected_area = cv2.bitwise_and(frame, frame, mask=color_mask)
+                debug_frame = cv2.addWeighted(
+                    debug_frame, 1, detected_area, 0.5, 0)
+
+                # Add text showing detection info
+                text = f"{target_color_name}: {detected_pixels} px"
+                cv2.putText(debug_frame, text, (10, 30 + 30 * target_idx),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_bgr, 2)
+
+                # Print BGR values if pixels detected (from test1)
+                if detected_pixels > 0:
+                    detected_area = cv2.bitwise_and(
+                        frame, frame, mask=color_mask)
+                    bgr_values = cv2.mean(detected_area)
+                    self.get_logger().info(
+                        f'{target_color_name} - BGR values: B:{bgr_values[0]:.1f}, G:{bgr_values[1]:.1f}, R:{bgr_values[2]:.1f} - Pixels: {detected_pixels}')
+
+            # Check detection threshold and cooldown
             current_time = time.time()
             if detected_pixels > COLOR_DETECTION_THRESHOLD and \
                (current_time - self.last_color_detection_times.get(target_idx, 0.0) > COLOR_COOLDOWN_SEC):
+                self.get_logger().info(
+                    f"Detected {target_color_name} (Index {target_idx})!")
                 self.last_color_detection_times[target_idx] = current_time
-                detected_flag = True
-                cv2.putText(display_frame, "DETECTED!", (frame.shape[1] // 2 - 50, frame.shape[0] - 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
-                self.get_logger().info(f"Color detected for station {target_idx} ({target_name})")
+                return True, debug_frame
 
-            return detected_flag, display_frame, mask_frame
+            return False, debug_frame
 
-        except cv2.error as cv2_e:
-             self.get_logger().error(f"OpenCV error during color detection: {cv2_e}")
-             return False, display_frame, np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
+        except cv2.error as cv_err:
+            self.get_logger().error(
+                f"OpenCV error during color detection: {cv_err}")
+            return False, None
         except Exception as e:
-            self.get_logger().error(f"Unexpected error in color detection: {e}", exc_info=True)
-            return False, display_frame, np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
+            self.get_logger().error(
+                f"Unexpected error during color detection: {e}")
+            return False, None
 
+    # --- Airtable Communication ---
+    def fetch_order_from_airtable(self):
+        """Fetches the oldest order that needs processing (starting with Cooking 1)."""
+        self.get_logger().info("Attempting to fetch next order from Airtable...")
+
+        # Find an order where the first required step (Cooking 1) is WAITING (0)
+        # and Pickup is also WAITING (0) - implies not completed or picked up yet.
+        # Sort by Order Name to get a consistent order if multiple are available.
+        params = {
+            "maxRecords": 1,
+            "filterByFormula": f"AND({{{AIRTABLE_COOKING_1_STATUS_FIELD}}}=0, {{{AIRTABLE_PICKUP_STATUS_FIELD}}}=0)",
+            "sort[0][field]": AIRTABLE_ORDER_NAME_COLUMN,
+            "sort[0][direction]": "asc",
+            # Request only the fields we need
+            "fields[]": [
+                AIRTABLE_ORDER_NAME_COLUMN,
+                AIRTABLE_COOKING_1_STATUS_FIELD,
+                AIRTABLE_COOKING_2_STATUS_FIELD,  # Fetch even if not used, for completeness
+                AIRTABLE_WHIPPED_CREAM_STATUS_FIELD,
+                AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD,
+                AIRTABLE_SPRINKLES_STATUS_FIELD,
+                AIRTABLE_PICKUP_STATUS_FIELD
+            ]
+        }
+        self.get_logger().debug(f"Airtable fetch query params: {params}")
+
+        try:
+            response = requests.get(
+                url=AIRTABLE_URL, headers=AIRTABLE_HEADERS, params=params, timeout=15)
+            response.raise_for_status()  # Raises HTTPError for bad responses (4xx or 5xx)
+            data = response.json()
+            self.get_logger().debug(
+                f"Airtable fetch response: {json.dumps(data, indent=2)}")
+
+            records = data.get("records", [])
+            if records:
+                record = records[0]
+                record_id = record.get("id")
+                fields = record.get("fields", {})
+                order_name = fields.get(AIRTABLE_ORDER_NAME_COLUMN)
+
+                if not record_id or not order_name:
+                    self.get_logger().error(
+                        f"Fetched record missing ID or Name: {record}")
+                    return None
+
+                # Store all relevant fetched data
+                fetched_order = {
+                    "record_id": record_id,
+                    "order_name": order_name,
+                    "station_status": {  # Store current status of all stations for this order
+                        AIRTABLE_COOKING_1_STATUS_FIELD: fields.get(AIRTABLE_COOKING_1_STATUS_FIELD, 0),
+                        AIRTABLE_COOKING_2_STATUS_FIELD: fields.get(AIRTABLE_COOKING_2_STATUS_FIELD, 0),
+                        AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: fields.get(AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD, 0),
+                        AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: fields.get(AIRTABLE_WHIPPED_CREAM_STATUS_FIELD, 0),
+                        AIRTABLE_SPRINKLES_STATUS_FIELD: fields.get(AIRTABLE_SPRINKLES_STATUS_FIELD, 0),
+                        AIRTABLE_PICKUP_STATUS_FIELD: fields.get(AIRTABLE_PICKUP_STATUS_FIELD, 0),
+                    }
+                }
+                self.get_logger().info(
+                    f"Fetched order: '{order_name}' (Record ID: {record_id})")
+                self.get_logger().debug(f"Order details: {fetched_order}")
+                return fetched_order
+            else:
+                self.get_logger().info("No suitable pending orders found in Airtable.")
+                return None
+
+        except requests.exceptions.RequestException as req_err:
+            self.log_airtable_error("fetch", req_err)
+            return None
+        except Exception as e:
+            self.get_logger().error(
+                f"Unexpected error processing Airtable fetch response: {e}")
+            return None
+
+    def update_station_status_in_airtable(self, record_id, station_field_name, new_status_code):
+        """Updates a specific station's numeric status field for an order."""
+        if not record_id or not station_field_name:
+            self.get_logger().error(
+                "Cannot update Airtable: record_id or station_field_name missing.")
+            return False
+
+        self.get_logger().info(
+            f"Updating Airtable: Record {record_id}, Field '{station_field_name}' to {new_status_code}")
+        update_url = f"{AIRTABLE_URL}/{record_id}"
+        payload = json.dumps({
+            "fields": {
+                station_field_name: new_status_code
+            }
+        })
+
+        try:
+            response = requests.patch(
+                update_url, headers=AIRTABLE_HEADERS, data=payload, timeout=10)
+            response.raise_for_status()
+            self.get_logger().info(f"Airtable update successful.")
+            # Update local cache if the update was for the current order
+            if self.current_order and self.current_order["record_id"] == record_id:
+                if station_field_name in self.current_order["station_status"]:
+                    self.current_order["station_status"][station_field_name] = new_status_code
+                    self.get_logger().debug(
+                        f"Local order status cache updated for {station_field_name}.")
+            return True
+        except requests.exceptions.RequestException as req_err:
+            self.log_airtable_error(
+                f"update field {station_field_name}", req_err)
+            return False
+        except Exception as e:
+            self.get_logger().error(
+                f"Unexpected error during Airtable update: {e}")
+            return False
+
+    def check_station_status_in_airtable(self, record_id, station_field_name):
+        """Checks the current numeric status of a specific station field for an order."""
+        if not record_id or not station_field_name:
+            self.get_logger().error("Cannot check Airtable status: missing parameters")
+            return None
+
+        check_url = f"{AIRTABLE_URL}/{record_id}"
+
+        # Add debug logging
+        self.get_logger().info(f"Checking Airtable status at URL: {check_url}")
+        self.get_logger().info(f"Looking for field: {station_field_name}")
+
+        try:
+            response = requests.get(
+                check_url,
+                headers=AIRTABLE_HEADERS,
+                params={"fields[]": [station_field_name]},
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            # Add debug logging
+            self.get_logger().info(f"Airtable response: {data}")
+
+            fields = data.get("fields", {})
+            status_value = fields.get(station_field_name)
+
+            # Convert to integer if possible
+            try:
+                status_value = int(status_value)
+            except (TypeError, ValueError):
+                self.get_logger().error(
+                    f"Invalid status value: {status_value}")
+                return None
+
+            return status_value
+
+        except Exception as e:
+            self.get_logger().error(f"Error checking Airtable status: {e}")
+            return None
+
+    def log_airtable_error(self, action_description, request_exception):
+        """Helper to log detailed Airtable request errors."""
+        self.get_logger().error(
+            f"Airtable {action_description} error: {request_exception}")
+        if hasattr(request_exception, 'response') and request_exception.response is not None:
+            self.get_logger().error(
+                f"Response Status Code: {request_exception.response.status_code}")
+            try:
+                # Try to parse JSON error details if available
+                error_details = request_exception.response.json()
+                self.get_logger().error(
+                    f"Response Body: {json.dumps(error_details)}")
+            except json.JSONDecodeError:
+                # Fallback to raw text if not JSON
+                self.get_logger().error(
+                    f"Response Text: {request_exception.response.text}")
+        # Consider setting state to AIRTABLE_ERROR
+        self.state = RobotState.AIRTABLE_ERROR
+        self.stop_moving()
+
+    # --- Sound Utility ---
     def play_sound(self, notes):
-        """Plays a sequence of notes through the robot's speaker."""
-        if not self.audio_publisher:
-            self.get_logger().warning("Audio publisher not available, cannot play sound.")
+        """Publishes a sequence of AudioNotes."""
+        if self.state in [RobotState.ERROR, RobotState.CAMERA_ERROR, RobotState.GPIO_ERROR, RobotState.AIRTABLE_ERROR]:
             return
-        note_msg = AudioNoteVector()
-        for frequency, duration_ms in notes:
+
+        audio_msg = AudioNoteVector()
+        audio_msg.append = False  # Play immediately
+        for freq, duration_ms in notes:
             note = AudioNote()
-            note.frequency = frequency
-            duration_sec = int(duration_ms / 1000)
-            duration_nsec = int((duration_ms % 1000) * 1e6)
-            note.max_runtime = Duration(sec=duration_sec, nanosec=duration_nsec)
-            note_msg.notes.append(note)
-        self.audio_publisher.publish(note_msg)
+            note.frequency = int(freq)
+            note.max_runtime = Duration(
+                sec=0, nanosec=int(duration_ms * 1_000_000))
+            audio_msg.notes.append(note)
+        self.get_logger().debug(f"Playing sound: {notes}")
+        self.audio_publisher.publish(audio_msg)
+
+    # --- Airtable Polling for Completion ---
+    def start_airtable_polling(self):
+        self.get_logger().info(
+            f"Starting Airtable polling timer (every {AIRTABLE_POLL_RATE}s) for station {self.target_station_index} completion.")
+        self.airtable_poll_timer = self.create_timer(
+            AIRTABLE_POLL_RATE, self.airtable_poll_callback)
+        self.wait_start_time = time.time()
+
+    def stop_airtable_polling(self):
+        """Cancels and destroys the Airtable polling timer."""
+        if self.airtable_poll_timer is not None:
+            if not self.airtable_poll_timer.is_canceled():
+                self.airtable_poll_timer.cancel()
+            # Cannot reliably destroy timer from within its own callback in ROS2 Foxy/Galactic?
+            # Let garbage collection handle it after cancel. In Humble+, use destroy_timer.
+            self.airtable_poll_timer = None
+            self.get_logger().info("Airtable polling timer stopped.")
+
+    def airtable_poll_callback(self):
+        """Callback function for the Airtable polling timer."""
+        if self.state != RobotState.WAITING_FOR_STATION_COMPLETION:
+            self.get_logger().warn("Airtable poll callback executed unexpectedly. Stopping polling.")
+            self.stop_airtable_polling()
+            return
+
+        target_field = STATION_INDEX_TO_FIELD.get(self.target_station_index)
+
+        # Add debug logging
+        self.get_logger().info(
+            f"Polling Airtable for station {self.target_station_index} ({target_field})")
+
+        # Check Airtable for the status
+        current_status = self.check_station_status_in_airtable(
+            self.current_order["record_id"], target_field)
+
+        # Add debug logging
+        self.get_logger().info(
+            f"Current status from Airtable: {current_status}")
+
+        if current_status == STATUS_DONE:  # This is 99
+            self.get_logger().info(
+                f"Station {self.target_station_index} reported DONE (99)!")
+            self.play_sound([(600, 100), (800, 150)])
+            self.stop_airtable_polling()
+
+            # Move to next station
+            self.current_sequence_index += 1
+            if self.current_sequence_index < len(self.station_sequence):
+                self.target_station_index = self.station_sequence[self.current_sequence_index]
+                next_station_name = STATION_COLORS_HSV[self.target_station_index]['name']
+                self.get_logger().info(
+                    f"Moving to next station: {self.target_station_index} ({next_station_name})")
+
+                # Important: Set the next state explicitly
+                if self.target_station_index == 0:
+                    self.state = RobotState.RETURNING_TO_PICKUP
+                else:
+                    self.state = RobotState.MOVING_TO_STATION
+
+    # --- Main Control Loop (State Machine Logic) ---
+    def control_loop(self):
+        """The core state machine logic, incorporating sensor checks and Airtable updates."""
+
+        # --- Terminal/Error State Handling ---
+        if self.state in [
+                RobotState.ERROR, RobotState.CAMERA_ERROR, RobotState.GPIO_ERROR,
+                RobotState.AIRTABLE_ERROR, RobotState.ALL_ORDERS_COMPLETE, RobotState.STATION_TIMED_OUT]:
+            # Ensure robot is stopped in any final/error state
+            self.stop_moving()
+            # Log error states periodically
+            if self.state != RobotState.ALL_ORDERS_COMPLETE:
+                self.get_logger().error(
+                    f"Robot in terminal/error state: {self.state.name}. Halting operations.", throttle_duration_sec=5)
+            # Consider canceling timers if not already done
+            if self.control_timer and not self.control_timer.is_canceled():
+                # self.control_timer.cancel() # Careful: cancelling the timer running this loop needs thought
+                pass  # Let it run but do nothing else
+            self.stop_airtable_polling()
+            return  # Exit loop iteration
+
+        # --- Sensor Reading and Processing (executed every loop) ---
+        left_ir, right_ir = self.read_ir_sensors()
+        frame = self.picam2.capture_array()
+        if CAMERA_ROTATION is not None:
+            frame = cv2.rotate(frame, CAMERA_ROTATION)
+
+        # --- State Machine Logic ---
+        current_state = self.state  # Cache state for this iteration
+        # self.get_logger().debug(f"State: {current_state.name}, Target St Idx: {self.target_station_index}, Seq Idx: {self.current_sequence_index}/{len(self.station_sequence)}") # Verbose
+
+        next_state = current_state  # Default to no state change
+
+        # --- State Implementations ---
+        if current_state == RobotState.IDLE:
+            self.get_logger().info("State: IDLE. Checking for new orders.")
+            self.current_order = None
+            self.station_sequence = []
+            self.current_sequence_index = 0
+            self.target_station_index = -1
+            next_state = RobotState.FETCHING_ORDER
+
+        elif current_state == RobotState.FETCHING_ORDER:
+            fetched_order = self.fetch_order_from_airtable()
+            if fetched_order:
+                self.current_order = fetched_order
+                self.get_logger().info(
+                    f"Processing Order: {self.current_order['order_name']}")
+                next_state = RobotState.PLANNING_ROUTE
+            elif self.state == RobotState.AIRTABLE_ERROR:
+                # Error handled by fetch_order_from_airtable setting state
+                pass  # Stay in AIRTABLE_ERROR
+            else:
+                # No orders found
+                self.get_logger().info("No more pending orders found.")
+                if self.pancakes_made_count > 0:
+                    # Batch complete sound
+                    self.play_sound([(600, 100), (700, 100), (800, 300)])
+                    self.get_logger().info(
+                        f"Completed {self.pancakes_made_count} order(s) this run.")
+                else:
+                    # No orders found initially sound
+                    self.play_sound([(400, 500)])
+                next_state = RobotState.ALL_ORDERS_COMPLETE
+
+        elif current_state == RobotState.PLANNING_ROUTE:
+            if not self.current_order:
+                self.get_logger().error("Planning route error: No current order data.")
+                next_state = RobotState.ERROR
+            else:
+                self.get_logger().info("Planning station route for current order...")
+                self.station_sequence = []
+                # Add stations based on their status fields
+                for station_field, station_idx in STATION_FIELD_TO_INDEX.items():
+                    if self.current_order["station_status"].get(station_field, 0) == STATUS_WAITING:
+                        self.station_sequence.append(station_idx)
+                        self.get_logger().info(
+                            f" - Adding Station {station_idx} ({STATION_COLORS_HSV[station_idx]['name']})")
+
+                self.get_logger().info(
+                    f"Planned route (indices): {self.station_sequence}")
+                self.current_sequence_index = 0  # Start at the beginning of the sequence
+                if not self.station_sequence:
+                    self.get_logger().error("Planning route error: No stations in sequence.")
+                    next_state = RobotState.ERROR
+                else:
+                    self.target_station_index = self.station_sequence[self.current_sequence_index]
+                    self.get_logger().info(
+                        f"First target station: {self.target_station_index} ({STATION_COLORS_HSV[self.target_station_index]['name']})")
+                    next_state = RobotState.MOVING_TO_STATION
+
+        elif current_state == RobotState.MOVING_TO_STATION or current_state == RobotState.RETURNING_TO_PICKUP:
+            # --- Color Check First ---
+            # Only check for the *specific target* station's color
+            detected, debug_frame = self.check_for_station_color(
+                frame, self.target_station_index)
+            if detected:
+                station_name = STATION_COLORS_HSV[self.target_station_index]['name']
+                self.get_logger().info(
+                    f"Target color marker for {station_name} (Index {self.target_station_index}) DETECTED!")
+                self.play_sound([(500, 150)])  # Arrival beep
+                self.stop_moving()  # Stop immediately upon detection
+
+                if current_state == RobotState.MOVING_TO_STATION:
+                    next_state = RobotState.ARRIVED_AT_STATION
+                else:  # Was RETURNING_TO_PICKUP
+                    next_state = RobotState.ARRIVED_AT_PICKUP
+
+            else:
+                # --- IR Line Following Logic ---
+                # (Execute if color not detected)
+                linear_speed = BASE_DRIVE_SPEED
+                angular_speed = 0.0
+
+                # Logic assumes LOW = On Line, HIGH = Off Line (adjust if needed)
+                if left_ir == GPIO.HIGH and right_ir == GPIO.HIGH:
+                    # Both Off Line (White/Floor) - On the line
+                    angular_speed = 0.0
+                    # self.get_logger().debug("IR: On Line") # Verbose
+                elif left_ir == GPIO.LOW and right_ir == GPIO.HIGH:
+                    # Left On Line (Black), Right Off Line -> Turn Left (changed from Right)
+                    angular_speed = BASE_ROTATE_SPEED * TURN_FACTOR  # Removed negative sign
+                    linear_speed *= 0.8  # Slow down slightly when turning
+                    # self.get_logger().debug("IR: Turn Left") # Verbose
+                elif left_ir == GPIO.HIGH and right_ir == GPIO.LOW:
+                    # Left Off Line, Right On Line (Black) -> Turn Right (changed from Left)
+                    angular_speed = -BASE_ROTATE_SPEED * TURN_FACTOR  # Added negative sign
+                    linear_speed *= 0.8  # Slow down slightly when turning
+                    # self.get_logger().debug("IR: Turn Right") # Verbose
+                elif left_ir == GPIO.LOW and right_ir == GPIO.LOW:
+                    # Both On Line (Black) - Line Lost or Junction?
+                    # Simple recovery: Stop linear, rotate slightly (changed direction)
+                    self.get_logger().warn(
+                        "IR: Both sensors on black (Line Lost/Junction?). Rotating slightly.")
+                    linear_speed = 0.0
+                    # Removed negative sign for opposite recovery rotation
+                    angular_speed = LOST_LINE_ROTATE_SPEED
+
+                self.move_robot(linear_speed, angular_speed)
+
+            # --- Update Debug Window ---
+            if self.debug_windows and debug_frame is not None:
+                # Add IR sensor status text
+                ir_text = f"IR L: {left_ir} R: {right_ir}"
+                cv2.putText(debug_frame, ir_text, (frame.shape[1] - 150, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+                # Show both original and HSV views
+                cv2.imshow("Camera View", frame)  # Original camera feed
+                # Debug view with overlays
+                cv2.imshow("Robot View (with detection)", debug_frame)
+                cv2.imshow("HSV View", cv2.cvtColor(
+                    frame, cv2.COLOR_BGR2HSV))  # HSV conversion view
+
+                # Move windows to convenient positions
+                cv2.moveWindow("Camera View", 0, 0)
+                cv2.moveWindow("Robot View (with detection)",
+                               frame.shape[1], 0)
+                cv2.moveWindow("HSV View", 0, frame.shape[0])
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):  # Allow quitting via window
+                    self.get_logger().info("Quit requested via OpenCV window.")
+                    self.state = RobotState.ERROR  # Or another state to signal shutdown
+                    rclpy.shutdown()  # Request ROS shutdown
+
+        elif current_state == RobotState.ARRIVED_AT_STATION:
+            # Action: Update Airtable status to ARRIVED (1)
+            station_field = STATION_INDEX_TO_FIELD.get(
+                self.target_station_index)
+            if not station_field:
+                self.get_logger().error(
+                    f"Arrival error: No Airtable field for station index {self.target_station_index}.")
+                next_state = RobotState.ERROR
+            else:
+                self.get_logger().info(
+                    f"Arrived at {STATION_COLORS_HSV[self.target_station_index]['name']} ({station_field}). Updating status to {STATUS_ARRIVED}.")
+                if self.update_station_status_in_airtable(self.current_order["record_id"], station_field, STATUS_ARRIVED):
+                    # Start polling timer
+                    self.start_airtable_polling()
+                    next_state = RobotState.WAITING_FOR_STATION_COMPLETION
+                else:
+                    # Update failed, error state should be set by update function
+                    self.get_logger().error(
+                        f"Failed to update Airtable status upon arrival at {station_field}.")
+                    # State should already be AIRTABLE_ERROR
+
+        elif current_state == RobotState.WAITING_FOR_STATION_COMPLETION:
+            # Primary logic is handled by the airtable_poll_callback timer.
+            # This state just checks if the polling timer has finished (successfully or timed out).
+            # Timer stopped itself (found 99 or timed out)
+            if self.airtable_poll_timer is None:
+                # Check if timeout occurred (state would be STATION_TIMED_OUT)
+                if self.state == RobotState.STATION_TIMED_OUT:
+                    self.get_logger().error("Station completion timed out. Halting order processing.")
+                    # Stay in STATION_TIMED_OUT state, error handling takes over.
+                    pass
+                # Check for other errors that might stop polling
+                elif self.state == RobotState.AIRTABLE_ERROR:
+                    self.get_logger().error("Airtable error occurred while waiting for station completion.")
+                    pass  # Stay in AIRTABLE_ERROR
+                else:
+                    # Polling must have found STATUS_DONE (99)
+                    self.get_logger().info(
+                        f"Station {self.target_station_index} processing complete.")
+                    # Move to the next station in the sequence
+                    self.current_sequence_index += 1
+                    if self.current_sequence_index < len(self.station_sequence):
+                        # More stations to visit
+                        self.target_station_index = self.station_sequence[self.current_sequence_index]
+                        next_station_name = STATION_COLORS_HSV[self.target_station_index]['name']
+                        self.get_logger().info(
+                            f"Proceeding to next station: {self.target_station_index} ({next_station_name})")
+                        if self.target_station_index == 0:  # Next station is Pickup
+                            next_state = RobotState.RETURNING_TO_PICKUP
+                        else:  # Next station is another processing station
+                            next_state = RobotState.MOVING_TO_STATION
+                    else:
+                        # This was the last station in the sequence (should be Pickup)
+                        # Should not happen if Pickup (0) is always last? Add check.
+                        self.get_logger().error("Reached end of sequence unexpectedly.")
+                        next_state = RobotState.ERROR  # Or ORDER_COMPLETE?
+
+            # else: Timer still running, do nothing here, wait for callback.
+
+        elif current_state == RobotState.ARRIVED_AT_PICKUP:
+            # Successfully returned to the start/pickup station
+            self.get_logger().info(
+                f"Arrived back at Pickup Station (Index 0). Order '{self.current_order['order_name']}' complete.")
+            self.pancakes_made_count += 1
+            # Order complete sound
+            self.play_sound([(800, 100), (700, 100), (600, 200)])
+
+            # Update Pickup status to DONE (99)
+            pickup_field = STATION_INDEX_TO_FIELD.get(0)
+            if pickup_field:
+                if not self.update_station_status_in_airtable(self.current_order["record_id"], pickup_field, STATUS_DONE):
+                    self.get_logger().error("Failed to update final Pickup status to DONE.")
+                    # Continue anyway? Or AIRTABLE_ERROR? Let's log and continue for now.
+            else:
+                self.get_logger().warn(
+                    "No Airtable field mapped for Pickup Station (Index 0). Cannot update status.")
+
+            # Transition to check for next order
+            next_state = RobotState.ORDER_COMPLETE  # Go to intermediate state before IDLE
+
+        elif current_state == RobotState.ORDER_COMPLETE:
+            # Reset for next potential order
+            self.current_order = None
+            self.station_sequence = []
+            self.current_sequence_index = 0
+            self.target_station_index = -1
+            self.get_logger().info("Order cycle finished. Returning to IDLE.")
+            next_state = RobotState.IDLE
+
+        # --- State Transition ---
+        if next_state != current_state:
+            self.get_logger().info(
+                f"State transition: {current_state.name} -> {next_state.name}")
+            self.state = next_state
+
+    # --- Cleanup Methods ---
 
     def cleanup_gpio(self):
-        """Cleanup GPIO pins."""
-        self.get_logger().info("Cleaning up GPIO pins...")
+        """Cleans up GPIO resources."""
+        self.get_logger().info("Cleaning up GPIO...")
         try:
             GPIO.cleanup()
             self.get_logger().info("GPIO cleanup successful.")
         except Exception as e:
             self.get_logger().error(f"Error during GPIO cleanup: {e}")
 
-    def cleanup_hardware(self):
-        """Clean up GPIO and Camera"""
-        self.cleanup_gpio()
-        # Cleanup Camera
-        if self.picam2:
+    def shutdown_camera(self):
+        """Safely stops the Pi Camera."""
+        if hasattr(self, 'picam2') and self.picam2:
             try:
-                self.get_logger().info("Stopping camera...")
-                self.picam2.stop()
-            except Exception as cam_e:
-                self.get_logger().error(f"Error stopping camera: {cam_e}")
-
-    def control_loop(self):
-        """Main state machine and control logic for the robot."""
-        # --- Check for fatal errors first ---
-        if self.state in [RobotState.ERROR, RobotState.CAMERA_ERROR, RobotState.GPIO_ERROR]:
-            self.stop_moving()
-            return
-
-        display_frame = None
-        mask_frame = None
-        color_detected = False
-
-        # --- Camera Capture and Processing ---
-        if self.picam2 and self.state != RobotState.CAMERA_ERROR:
-            try:
-                raw_frame = self.picam2.capture_array()
-                if self.target_station_index != -1:
-                    color_detected, display_frame, mask_frame = self.check_for_station_color(raw_frame, self.target_station_index)
-                else:
-                    display_frame = raw_frame.copy()
-                    cv2.putText(display_frame, f"State: {self.state.name}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    cv2.putText(display_frame, "Target: None", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                if self.picam2.started:
+                    self.get_logger().info("Stopping Pi Camera...")
+                    self.picam2.stop()
+                    self.get_logger().info("Pi Camera stopped.")
             except Exception as e:
-                self.get_logger().error(f"Camera error in control loop: {e}", exc_info=True)
-                self.state = RobotState.CAMERA_ERROR
-                self.stop_moving()
-                return
-        else:
-            # No camera, cannot do visual stop
-            if self.state != RobotState.CAMERA_ERROR:
-                 self.get_logger().warning("Camera not available, cannot perform visual checks.")
+                self.get_logger().error(f"Error stopping camera: {e}")
+        if self.debug_windows:
+            cv2.destroyAllWindows()
 
+    def shutdown_robot(self):
+        """Commands the robot to stop moving and cleans up resources."""
+        self.get_logger().info("Initiating robot shutdown sequence...")
+        # 1. Stop movement
+        self.stop_moving()
+        # 2. Cancel timers
+        if hasattr(self, 'control_timer') and self.control_timer and not self.control_timer.is_canceled():
+            self.control_timer.cancel()
+        self.stop_airtable_polling()  # Ensure polling timer is stopped
+        # 3. Stop camera
+        self.shutdown_camera()
+        # 4. Clean up GPIO
+        self.cleanup_gpio()
+        self.get_logger().info("Robot shutdown sequence complete.")
 
-        # --- State Machine Logic ---
-        try:
-            # State Transition based on Color Detection
-            if color_detected and self.state == RobotState.MOVING_TO_STATION:
-                self.get_logger().info(f"Color marker detected for station {self.target_station_index}. Arriving.")
-                self.play_sound([(523, 100), (659, 150)])
-                self.stop_moving()
-                self.state = RobotState.ARRIVED_AT_STATION
-                # Skip rest of logic this cycle
+# --- Main Execution Function ---
 
-            # --- Handle States ---
-            elif self.state == RobotState.IDLE:
-                # self.get_logger().info("State: IDLE") # Less verbose
-                self.stop_moving()
-                self.current_order = None
-                self.station_sequence = []
-                self.current_sequence_index = -1
-                self.target_station_index = -1
-                self.current_order = self.fetch_order_from_airtable()
-                if self.current_order:
-                    if self.state == RobotState.AIRTABLE_ERROR:
-                         self.get_logger().error("Airtable error during fetch. Halting.")
-                    else:
-                        self.get_logger().info(f"Order '{self.current_order['order_name']}' received. Planning route...")
-                        self.state = RobotState.PLANNING_ROUTE
-                else:
-                    if self.state != RobotState.AIRTABLE_ERROR:
-                        # self.get_logger().info("No pending orders found. Entering ALL_ORDERS_COMPLETE state.") # Less verbose
-                        self.state = RobotState.ALL_ORDERS_COMPLETE
-
-            elif self.state == RobotState.PLANNING_ROUTE:
-                self.get_logger().info("State: PLANNING_ROUTE")
-                if not self.current_order:
-                    self.get_logger().error("PLANNING_ROUTE: No current order! Returning to IDLE.")
-                    self.state = RobotState.IDLE
-                    return
-
-                self.station_sequence = []
-                order_status = self.current_order["station_status"]
-
-                # --- Determine Sequence ---
-                # 1. Cooking 1 (Mandatory Start)
-                if order_status.get(AIRTABLE_COOKING_1_STATUS_FIELD) == STATUS_WAITING:
-                    self.station_sequence.append(STATION_FIELD_TO_INDEX[AIRTABLE_COOKING_1_STATUS_FIELD])
-                else:
-                    self.get_logger().error(f"Order '{self.current_order['order_name']}' fetched, but '{AIRTABLE_COOKING_1_STATUS_FIELD}' != WAITING. Aborting.")
-                    self.state = RobotState.IDLE
-                    self.current_order = None
-                    return
-
-                # 2. Cooking 2
-                if order_status.get(AIRTABLE_COOKING_2_STATUS_FIELD) == STATUS_WAITING:
-                    idx2 = STATION_FIELD_TO_INDEX[AIRTABLE_COOKING_2_STATUS_FIELD]
-                    if idx2 not in STATION_COLORS_HSV: # Check if added to color map
-                         self.get_logger().warning(f"Station {idx2} ({AIRTABLE_COOKING_2_STATUS_FIELD}) required but has no color definition. Visual stop impossible.")
-                    self.station_sequence.append(idx2) # Add regardless for sequence
-
-                # 3. Toppings
-                topping_fields = [AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD, AIRTABLE_WHIPPED_CREAM_STATUS_FIELD, AIRTABLE_SPRINKLES_STATUS_FIELD]
-                for field in topping_fields:
-                    if order_status.get(field) == STATUS_WAITING:
-                        if field in STATION_FIELD_TO_INDEX:
-                            idx = STATION_FIELD_TO_INDEX[field]
-                            if idx not in STATION_COLORS_HSV:
-                                self.get_logger().warning(f"Station {idx} ({field}) required but has no color definition. Visual stop impossible.")
-                            self.station_sequence.append(idx) # Add regardless for sequence
-                        else:
-                             self.get_logger().warning(f"Topping field '{field}' required but not in STATION_FIELD_TO_INDEX. Skipping.")
-
-                # 4. Pickup Station (Mandatory End)
-                pickup_idx = STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
-                if pickup_idx not in STATION_COLORS_HSV:
-                     self.get_logger().error(f"Pickup station {pickup_idx} ({AIRTABLE_PICKUP_STATUS_FIELD}) has no color definition! Visual stop impossible.")
-                self.station_sequence.append(pickup_idx) # Add regardless
-
-                # --- Finalize ---
-                if not self.station_sequence or self.station_sequence[0] != STATION_FIELD_TO_INDEX[AIRTABLE_COOKING_1_STATUS_FIELD]:
-                    self.get_logger().error("Route planning failed (empty or doesn't start with Cooking 1)! Aborting order.")
-                    self.state = RobotState.IDLE
-                    self.current_order = None
-                else:
-                    self.current_sequence_index = 0
-                    self.target_station_index = self.station_sequence[self.current_sequence_index]
-                    self.get_logger().info(f"Route planned: {self.station_sequence}. Next target: Station {self.target_station_index}")
-                    self.state = RobotState.MOVING_TO_STATION
-                    self.play_sound([(440,100), (550,100), (660, 100)])
-
-            elif self.state == RobotState.MOVING_TO_STATION:
-                # Line following
-                if self.target_station_index == -1 or self.current_sequence_index >= len(self.station_sequence):
-                     self.get_logger().error(f"MOVING_TO_STATION: Invalid target/index. Stopping.")
-                     self.stop_moving(); self.state = RobotState.ERROR; return
-
-                left_on, right_on = self.read_ir_sensors()
-
-                if left_on and right_on:
-                    self.move_robot(BASE_DRIVE_SPEED, 0.0)
-                elif left_on and not right_on:
-                    self.move_robot(BASE_DRIVE_SPEED * TURN_FACTOR, -BASE_ROTATE_SPEED)
-                elif not left_on and right_on:
-                    self.move_robot(BASE_DRIVE_SPEED * TURN_FACTOR, BASE_ROTATE_SPEED)
-                else: # Lost line
-                    current_time = time.time()
-                    if int(current_time) % 2 == 0: self.move_robot(0.0, LOST_LINE_ROTATE_SPEED)
-                    else: self.move_robot(0.0, -LOST_LINE_ROTATE_SPEED)
-
-            elif self.state == RobotState.ARRIVED_AT_STATION:
-                self.get_logger().info(f"State: ARRIVED_AT_STATION ({self.target_station_index})")
-                self.stop_moving()
-
-                if self.current_sequence_index < 0 or self.current_sequence_index >= len(self.station_sequence):
-                    self.get_logger().error(f"ARRIVED_AT_STATION: Invalid sequence index {self.current_sequence_index}. Stopping."); self.state = RobotState.ERROR; return
-
-                current_station_idx = self.station_sequence[self.current_sequence_index]
-                if current_station_idx not in STATION_INDEX_TO_FIELD:
-                    self.get_logger().error(f"ARRIVED_AT_STATION: No Airtable field for index {current_station_idx}. Stopping."); self.state = RobotState.ERROR; return
-
-                station_field = STATION_INDEX_TO_FIELD[current_station_idx]
-                self.get_logger().info(f"At {station_field}. Updating Airtable to ARRIVED ({STATUS_ARRIVED}).")
-
-                if self.update_station_status(self.current_order["record_id"], station_field, STATUS_ARRIVED):
-                    self.wait_start_time = time.time()
-                    self.state = RobotState.WAITING_FOR_STATION_COMPLETION
-                    self.get_logger().info(f"Status updated. Waiting for {station_field} to be DONE.")
-                else: # update status already set state to AIRTABLE_ERROR
-                    self.get_logger().error(f"Failed to update Airtable status for {station_field}.")
-
-            elif self.state == RobotState.WAITING_FOR_STATION_COMPLETION:
-                elapsed_wait_time = time.time() - self.wait_start_time
-                if elapsed_wait_time > STATION_WAIT_TIMEOUT_SEC:
-                    self.get_logger().warning(f"WAITING state TIMEOUT ({elapsed_wait_time:.1f}s > {STATION_WAIT_TIMEOUT_SEC}s) for station {self.target_station_index}. Moving to TIMED_OUT state.")
-                    self.play_sound([(330, 500), (220, 500)])
-                    self.state = RobotState.STATION_TIMED_OUT
-                    return
-
-                # Check Airtable periodically using AIRTABLE_POLL_RATE approx
-                if time.time() - getattr(self, '_last_airtable_check_time', 0) >= AIRTABLE_POLL_RATE:
-                    self._last_airtable_check_time = time.time() # Update last check time
-
-                    if self.current_sequence_index < 0 or self.current_sequence_index >= len(self.station_sequence):
-                        self.get_logger().error(f"WAITING_FOR_STATION: Invalid sequence index. Stopping."); self.state = RobotState.ERROR; return
-                    current_station_idx = self.station_sequence[self.current_sequence_index]
-                    if current_station_idx not in STATION_INDEX_TO_FIELD:
-                        self.get_logger().error(f"WAITING_FOR_STATION: No Airtable field for index {current_station_idx}. Stopping."); self.state = RobotState.ERROR; return
-
-                    station_field = STATION_INDEX_TO_FIELD[current_station_idx]
-                    # self.get_logger().debug(f"Checking Airtable if {station_field} is DONE...") # Verbose
-
-                    if self.wait_for_station_completion(self.current_order["record_id"], station_field):
-                        self.get_logger().info(f"Station {current_station_idx} ({station_field}) reported DONE ({STATUS_DONE}).")
-                        self.play_sound([(659, 150), (784, 200)])
-
-                        self.current_sequence_index += 1 # Advance sequence
-                        if self.current_sequence_index >= len(self.station_sequence):
-                            self.get_logger().info("Completed all stations in sequence.")
-                            self.state = RobotState.ORDER_COMPLETE
-                        else:
-                            self.target_station_index = self.station_sequence[self.current_sequence_index]
-                            self.get_logger().info(f"Moving to next station: {self.target_station_index} ({STATION_INDEX_TO_FIELD.get(self.target_station_index, 'Unknown')})")
-                            self.state = RobotState.MOVING_TO_STATION
-                    # else: Stay waiting
-
-            elif self.state == RobotState.ORDER_COMPLETE:
-                self.get_logger().info(f"State: ORDER_COMPLETE for '{self.current_order['order_name']}'")
-                self.play_sound([(784, 150), (880, 150), (1047, 250)])
-                self.stop_moving()
-                self.current_order = None # Reset for next
-                self.station_sequence = []
-                self.current_sequence_index = -1
-                self.target_station_index = -1
-                self.state = RobotState.IDLE # Go back to look for more work
-                self.get_logger().info("Order finished. Returning to IDLE state.")
-
-            elif self.state == RobotState.ALL_ORDERS_COMPLETE:
-                self.get_logger().info("State: ALL_ORDERS_COMPLETE - No orders found. Waiting...")
-                self.play_sound([(440, 200), (440, 200)])
-                self.stop_moving()
-                time.sleep(5.0) # Wait before checking again
-                self.state = RobotState.IDLE
-
-            elif self.state == RobotState.STATION_TIMED_OUT:
-                self.get_logger().error("State: STATION_TIMED_OUT - Station did not complete in time.")
-                self.stop_moving()
-                self.get_logger().error(f"Aborting order '{self.current_order['order_name']}' due to station timeout.")
-                self.current_order = None; self.station_sequence = []; self.current_sequence_index = -1; self.target_station_index = -1
-                self.state = RobotState.IDLE # Go back to fetch next order
-
-            elif self.state == RobotState.AIRTABLE_ERROR:
-                 self.get_logger().error("State: AIRTABLE_ERROR - Halting due to Airtable communication issue.")
-                 self.play_sound([(330, 300), (330, 300), (330, 300)])
-                 self.stop_moving() # Remain in this state
-
-        except Exception as e:
-            self.get_logger().error(f"Unhandled exception in state machine logic: {e}", exc_info=True)
-            self.state = RobotState.ERROR
-            self.stop_moving()
-
-        # --- Display Update ---
-        finally:
-            if self.debug_windows:
-                try:
-                    if display_frame is not None: cv2.imshow("Camera Feed", display_frame)
-                    if mask_frame is not None: cv2.imshow("Color Detection Mask", mask_frame)
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == ord('q'):
-                        self.get_logger().info("Quit key 'q' pressed. Initiating shutdown.")
-                        self.state = RobotState.ERROR
-                        self.stop_moving()
-                        # Request ROS shutdown (cleaner way)
-                        self.get_logger().info("Requesting ROS shutdown...")
-                        rclpy.try_shutdown()
-
-                except Exception as display_e:
-                    self.get_logger().error(f"Error updating OpenCV windows: {display_e}")
-                    # self.debug_windows = False # Optionally disable if problematic
-                    # cv2.destroyAllWindows()
 
 def main(args=None):
     rclpy.init(args=args)
-    node = None
-    executor = None
+    pancake_robot_node = None
+    exit_code = 0
     try:
-        node = PancakeRobotNode()
-        if node.state not in [RobotState.GPIO_ERROR, RobotState.CAMERA_ERROR, RobotState.ERROR]:
-            executor = SingleThreadedExecutor()
-            executor.add_node(node)
-            node.get_logger().info("Starting ROS2 executor spin...")
-            executor.spin()
+        pancake_robot_node = PancakeRobotNode()
+
+        # Check for fatal initialization errors before spinning
+        if pancake_robot_node.state not in [RobotState.GPIO_ERROR, RobotState.CAMERA_ERROR, RobotState.AIRTABLE_ERROR]:
+            rclpy.spin(pancake_robot_node)
         else:
-             node.get_logger().fatal(f"Node initialization failed in state {node.state.name}. Shutting down.")
+            pancake_robot_node.get_logger().fatal(
+                f"Node initialization failed with state: {pancake_robot_node.state.name}. Shutting down.")
+            exit_code = 1  # Indicate error exit
 
     except KeyboardInterrupt:
-        if node: node.get_logger().info("KeyboardInterrupt received.")
-        else: print("KeyboardInterrupt received during node initialization.")
+        print("Keyboard interrupt detected, shutting down.")
     except Exception as e:
-        if node: node.get_logger().fatal(f"Unhandled exception: {e}", exc_info=True)
-        else: print(f"FATAL Exception during node initialization: {e}")
+        print(f"\nAn unexpected error occurred during ROS execution: {e}")
+        import traceback
+        traceback.print_exc()
+        exit_code = 1
     finally:
-        if node:
-            node.get_logger().info("Initiating final cleanup...")
-            node.stop_moving()
-            if executor: executor.shutdown()
-            node.cleanup_hardware() # Cleans GPIO and Camera
-            if node.debug_windows:
-                 node.get_logger().info("Closing OpenCV windows...")
-                 cv2.destroyAllWindows()
-            node.get_logger().info("Destroying node...")
-            node.destroy_node()
-        else:
-            print("Node object not fully created, skipping node-specific cleanup.")
+        # Cleanup sequence
+        if pancake_robot_node:
+            pancake_robot_node.get_logger().info(
+                "ROS shutdown requested. Initiating node cleanup...")
+            # Calls stop, cancels timers, cleans GPIO/Camera
+            pancake_robot_node.shutdown_robot()
+            pancake_robot_node.destroy_node()
+            pancake_robot_node.get_logger().info("Pancake Robot Node destroyed.")
 
+        # Shutdown ROS client library
         if rclpy.ok():
-             print("Shutting down rclpy...")
-             rclpy.shutdown()
-        print("Shutdown complete.")
+            rclpy.shutdown()
+        print("ROS2 shutdown complete.")
+        # Ensure GPIO cleanup is attempted even if node init failed partially
+        try:
+            if GPIO.getmode() is not None:  # Check if GPIO mode was set
+                GPIO.cleanup()
+                print("Final GPIO cleanup check performed.")
+        except Exception as e:
+            print(f"Error during final GPIO cleanup check: {e}")
+
+    return exit_code
+
 
 if __name__ == '__main__':
-    main()
+    import sys
+    sys.exit(main())

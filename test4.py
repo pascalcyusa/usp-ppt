@@ -220,7 +220,6 @@ class PancakeRobotNode(Node):
             self.state = RobotState.ERROR
 
     # --- Airtable Functions (fetch, update, wait) ---
-    # (These functions remain unchanged from the previous version)
     def fetch_order_from_airtable(self):
         """Fetches the oldest order where Cooking 1 is WAITING and Pickup is WAITING."""
         # self.get_logger().info("Attempting to fetch order from Airtable...") # Reduced verbosity
@@ -295,7 +294,6 @@ class PancakeRobotNode(Node):
     # --- Color Detection ---
     def check_for_station_color(self, frame, target_idx):
         """Detects station color markers. Returns (detected_flag, display_frame, mask_frame)."""
-        # (This function remains unchanged from the previous version)
         detected_flag = False
         display_frame = frame.copy()
         mask_frame = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
@@ -323,13 +321,10 @@ class PancakeRobotNode(Node):
     # --- Sound ---
     def play_sound(self, notes):
         """Plays a sequence of notes."""
-        # Check if publisher exists and is valid
+        # Check if publisher object exists
         if not hasattr(self, 'audio_publisher') or self.audio_publisher is None:
             self.get_logger().warning("Audio publisher not initialized, cannot play sound.")
             return
-        if not self.audio_publisher.is_activated:
-             self.get_logger().warning("Audio publisher exists but is not activated, cannot play sound.")
-             return
 
         note_msg = AudioNoteVector()
         note_list_str = [] # For logging
@@ -352,6 +347,7 @@ class PancakeRobotNode(Node):
         self.get_logger().info(f"Publishing sound: {', '.join(note_list_str)}") # Log the notes being played
         try:
             self.audio_publisher.publish(note_msg)
+            self.get_logger().debug("Audio message published successfully.") # Add success debug log
         except Exception as e:
              self.get_logger().error(f"Failed to publish audio command: {e}", exc_info=True)
 
@@ -550,7 +546,6 @@ class PancakeRobotNode(Node):
 
 # --- Main Function ---
 def main(args=None):
-    # (Main function remains unchanged)
     rclpy.init(args=args)
     node = None; executor = None
     try:

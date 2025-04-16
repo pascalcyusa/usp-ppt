@@ -115,12 +115,16 @@ LOST_LINE_ROTATE_SPEED = 0.1    # rad/s - Speed for rotation when line is lost
 COLOR_DETECTION_THRESHOLD = 2000  # Min pixels of target color to trigger detection
 COLOR_COOLDOWN_SEC = 5.0        # Min seconds before detecting the *same* station color again
 STATION_WAIT_TIMEOUT_SEC = 120.0  # Max seconds to wait for Airtable status 99 before failing
+# --- New Constant ---
+LEAVING_STATION_DURATION_SEC = 2.0 # Seconds to drive forward after leaving a station
 
 
 class RobotState(Enum):
     IDLE = auto()
     FETCHING_ORDER = auto()
     PLANNING_ROUTE = auto()
+    # --- New State ---
+    LEAVING_STATION = auto()
     MOVING_TO_STATION = auto()
     ARRIVED_AT_STATION = auto()
     WAITING_FOR_STATION_COMPLETION = auto()
@@ -145,6 +149,10 @@ class PancakeRobotNode(Node):
         self.target_station_index = -1
         self.last_color_detection_times = {idx: 0.0 for idx in STATION_COLORS_HSV.keys()}
         self.wait_start_time = 0.0
+
+         # --- New Attribute ---
+        self.leaving_station_start_time = 0.0
+
         self.picam2 = None
         self.debug_windows = True # Control OpenCV display windows
 
@@ -450,38 +458,40 @@ class PancakeRobotNode(Node):
         color_detected = False
 
         # --- Camera Capture and Processing ---
+        # Run camera processing regardless of state (except CAMERA_ERROR)
+        # But only use 'color_detected' flag for state transitions in specific states (like MOVING_TO_STATION)
+        process_color = (self.state == RobotState.MOVING_TO_STATION) # Only actively check for transitions in this state
+
         if self.picam2 and self.state != RobotState.CAMERA_ERROR:
             try:
                 raw_frame = self.picam2.capture_array()
                 if self.target_station_index != -1:
-                    color_detected, display_frame, mask_frame = self.check_for_station_color(raw_frame, self.target_station_index)
+                    # Perform detection to get visuals, but only use the flag if process_color is True
+                    _detected_flag, display_frame, mask_frame = self.check_for_station_color(raw_frame, self.target_station_index)
+                    if process_color:
+                        color_detected = _detected_flag # Only set the flag if we are in the right state
                 else:
+                    # Still display frame even if no target
                     display_frame = raw_frame.copy()
                     cv2.putText(display_frame, f"State: {self.state.name}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     cv2.putText(display_frame, "Target: None", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
             except Exception as e:
                 self.get_logger().error(f"Camera error in control loop: {e}", exc_info=True)
                 self.state = RobotState.CAMERA_ERROR
                 self.stop_moving()
                 return
-        else:
-            # No camera, cannot do visual stop
-            if self.state != RobotState.CAMERA_ERROR:
-                 self.get_logger().warning("Camera not available, cannot perform visual checks.")
-
+        # else: # No camera, visual stops won't work. Continue if possible?
 
         # --- State Machine Logic ---
         try:
-            # State Transition based on Color Detection
-            if color_detected and self.state == RobotState.MOVING_TO_STATION:
-                self.get_logger().info(f"Color marker detected for station {self.target_station_index}. Arriving.")
-                self.play_sound([(523, 100), (659, 150)])
-                self.stop_moving()
-                self.state = RobotState.ARRIVED_AT_STATION
-                # Skip rest of logic this cycle
+            # State Transition based on Color Detection (ONLY if MOVING_TO_STATION)
+            # Moved the check inside the state machine logic for clarity
+            # if color_detected and self.state == RobotState.MOVING_TO_STATION: <--- REMOVED FROM HERE
 
             # --- Handle States ---
-            elif self.state == RobotState.IDLE:
+            if self.state == RobotState.IDLE:
+                # (Code for IDLE state remains the same)
                 # self.get_logger().info("State: IDLE") # Less verbose
                 self.stop_moving()
                 self.current_order = None
@@ -500,7 +510,9 @@ class PancakeRobotNode(Node):
                         # self.get_logger().info("No pending orders found. Entering ALL_ORDERS_COMPLETE state.") # Less verbose
                         self.state = RobotState.ALL_ORDERS_COMPLETE
 
+
             elif self.state == RobotState.PLANNING_ROUTE:
+                # (Code for PLANNING_ROUTE state remains the same)
                 self.get_logger().info("State: PLANNING_ROUTE")
                 if not self.current_order:
                     self.get_logger().error("PLANNING_ROUTE: No current order! Returning to IDLE.")
@@ -554,11 +566,37 @@ class PancakeRobotNode(Node):
                     self.current_sequence_index = 0
                     self.target_station_index = self.station_sequence[self.current_sequence_index]
                     self.get_logger().info(f"Route planned: {self.station_sequence}. Next target: Station {self.target_station_index}")
-                    self.state = RobotState.MOVING_TO_STATION
+                    self.state = RobotState.MOVING_TO_STATION # Start by moving
                     self.play_sound([(440,100), (550,100), (660, 100)])
 
+
+            # --- NEW STATE ---
+            elif self.state == RobotState.LEAVING_STATION:
+                # Drive forward for a fixed duration to move away from the previous marker
+                current_time = time.time()
+                elapsed_leaving_time = current_time - self.leaving_station_start_time
+
+                if elapsed_leaving_time < LEAVING_STATION_DURATION_SEC:
+                    # Continue driving straight forward
+                    self.get_logger().debug(f"Leaving station... {elapsed_leaving_time:.1f}s / {LEAVING_STATION_DURATION_SEC}s")
+                    self.move_robot(BASE_DRIVE_SPEED, 0.0) # Drive straight, ignore line following
+                else:
+                    # Time's up, stop briefly and transition to normal movement
+                    self.get_logger().info(f"Finished leaving station. Now moving towards station {self.target_station_index}.")
+                    self.stop_moving()
+                    self.state = RobotState.MOVING_TO_STATION
+
+
             elif self.state == RobotState.MOVING_TO_STATION:
-                # Line following
+                # Check for color detection *first* in this state
+                if color_detected: # color_detected is only True if check happened this cycle AND state is MOVING_TO_STATION
+                    self.get_logger().info(f"Color marker detected for station {self.target_station_index}. Arriving.")
+                    self.play_sound([(523, 100), (659, 150)])
+                    self.stop_moving()
+                    self.state = RobotState.ARRIVED_AT_STATION
+                    return # Exit state logic for this cycle
+
+                # If color not detected, perform line following
                 if self.target_station_index == -1 or self.current_sequence_index >= len(self.station_sequence):
                      self.get_logger().error(f"MOVING_TO_STATION: Invalid target/index. Stopping.")
                      self.stop_moving(); self.state = RobotState.ERROR; return
@@ -576,7 +614,9 @@ class PancakeRobotNode(Node):
                     if int(current_time) % 2 == 0: self.move_robot(0.0, LOST_LINE_ROTATE_SPEED)
                     else: self.move_robot(0.0, -LOST_LINE_ROTATE_SPEED)
 
+
             elif self.state == RobotState.ARRIVED_AT_STATION:
+                # (Code for ARRIVED_AT_STATION state remains the same)
                 self.get_logger().info(f"State: ARRIVED_AT_STATION ({self.target_station_index})")
                 self.stop_moving()
 
@@ -597,6 +637,7 @@ class PancakeRobotNode(Node):
                 else: # update status already set state to AIRTABLE_ERROR
                     self.get_logger().error(f"Failed to update Airtable status for {station_field}.")
 
+
             elif self.state == RobotState.WAITING_FOR_STATION_COMPLETION:
                 elapsed_wait_time = time.time() - self.wait_start_time
                 if elapsed_wait_time > STATION_WAIT_TIMEOUT_SEC:
@@ -605,9 +646,9 @@ class PancakeRobotNode(Node):
                     self.state = RobotState.STATION_TIMED_OUT
                     return
 
-                # Check Airtable periodically using AIRTABLE_POLL_RATE approx
+                # Check Airtable periodically
                 if time.time() - getattr(self, '_last_airtable_check_time', 0) >= AIRTABLE_POLL_RATE:
-                    self._last_airtable_check_time = time.time() # Update last check time
+                    self._last_airtable_check_time = time.time()
 
                     if self.current_sequence_index < 0 or self.current_sequence_index >= len(self.station_sequence):
                         self.get_logger().error(f"WAITING_FOR_STATION: Invalid sequence index. Stopping."); self.state = RobotState.ERROR; return
@@ -616,23 +657,32 @@ class PancakeRobotNode(Node):
                         self.get_logger().error(f"WAITING_FOR_STATION: No Airtable field for index {current_station_idx}. Stopping."); self.state = RobotState.ERROR; return
 
                     station_field = STATION_INDEX_TO_FIELD[current_station_idx]
-                    # self.get_logger().debug(f"Checking Airtable if {station_field} is DONE...") # Verbose
 
                     if self.wait_for_station_completion(self.current_order["record_id"], station_field):
                         self.get_logger().info(f"Station {current_station_idx} ({station_field}) reported DONE ({STATUS_DONE}).")
                         self.play_sound([(659, 150), (784, 200)])
 
-                        self.current_sequence_index += 1 # Advance sequence
+                        # --- MODIFIED TRANSITION ---
+                        last_station_index = self.current_sequence_index # Store index of station just completed
+                        self.current_sequence_index += 1 # Advance sequence index
+
                         if self.current_sequence_index >= len(self.station_sequence):
+                            # This was the last station
                             self.get_logger().info("Completed all stations in sequence.")
                             self.state = RobotState.ORDER_COMPLETE
                         else:
+                            # More stations to go - Enter LEAVING state first
                             self.target_station_index = self.station_sequence[self.current_sequence_index]
-                            self.get_logger().info(f"Moving to next station: {self.target_station_index} ({STATION_INDEX_TO_FIELD.get(self.target_station_index, 'Unknown')})")
-                            self.state = RobotState.MOVING_TO_STATION
+                            self.get_logger().info(f"Station {last_station_index} finished. Entering LEAVING_STATION state before moving to {self.target_station_index}.")
+                            self.leaving_station_start_time = time.time() # Record start time for leaving
+                            self.state = RobotState.LEAVING_STATION
+                            # Reset cooldown for the station we just left *now*, so it can be detected again later if needed
+                            self.last_color_detection_times[last_station_index] = 0.0
                     # else: Stay waiting
 
+
             elif self.state == RobotState.ORDER_COMPLETE:
+                 # (Code for ORDER_COMPLETE state remains the same)
                 self.get_logger().info(f"State: ORDER_COMPLETE for '{self.current_order['order_name']}'")
                 self.play_sound([(784, 150), (880, 150), (1047, 250)])
                 self.stop_moving()
@@ -643,24 +693,31 @@ class PancakeRobotNode(Node):
                 self.state = RobotState.IDLE # Go back to look for more work
                 self.get_logger().info("Order finished. Returning to IDLE state.")
 
+
             elif self.state == RobotState.ALL_ORDERS_COMPLETE:
+                 # (Code for ALL_ORDERS_COMPLETE state remains the same)
                 self.get_logger().info("State: ALL_ORDERS_COMPLETE - No orders found. Waiting...")
                 self.play_sound([(440, 200), (440, 200)])
                 self.stop_moving()
                 time.sleep(5.0) # Wait before checking again
                 self.state = RobotState.IDLE
 
+
             elif self.state == RobotState.STATION_TIMED_OUT:
+                 # (Code for STATION_TIMED_OUT state remains the same)
                 self.get_logger().error("State: STATION_TIMED_OUT - Station did not complete in time.")
                 self.stop_moving()
                 self.get_logger().error(f"Aborting order '{self.current_order['order_name']}' due to station timeout.")
                 self.current_order = None; self.station_sequence = []; self.current_sequence_index = -1; self.target_station_index = -1
                 self.state = RobotState.IDLE # Go back to fetch next order
 
+
             elif self.state == RobotState.AIRTABLE_ERROR:
+                 # (Code for AIRTABLE_ERROR state remains the same)
                  self.get_logger().error("State: AIRTABLE_ERROR - Halting due to Airtable communication issue.")
                  self.play_sound([(330, 300), (330, 300), (330, 300)])
                  self.stop_moving() # Remain in this state
+
 
         except Exception as e:
             self.get_logger().error(f"Unhandled exception in state machine logic: {e}", exc_info=True)
@@ -669,6 +726,7 @@ class PancakeRobotNode(Node):
 
         # --- Display Update ---
         finally:
+             # (Code for Display Update remains the same)
             if self.debug_windows:
                 try:
                     if display_frame is not None: cv2.imshow("Camera Feed", display_frame)
@@ -678,15 +736,14 @@ class PancakeRobotNode(Node):
                         self.get_logger().info("Quit key 'q' pressed. Initiating shutdown.")
                         self.state = RobotState.ERROR
                         self.stop_moving()
-                        # Request ROS shutdown (cleaner way)
                         self.get_logger().info("Requesting ROS shutdown...")
                         rclpy.try_shutdown()
 
                 except Exception as display_e:
                     self.get_logger().error(f"Error updating OpenCV windows: {display_e}")
-                    # self.debug_windows = False # Optionally disable if problematic
-                    # cv2.destroyAllWindows()
 
+
+# (main function remains the same)
 def main(args=None):
     rclpy.init(args=args)
     node = None

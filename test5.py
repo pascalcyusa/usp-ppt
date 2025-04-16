@@ -286,17 +286,14 @@ class PancakeRobotNode(Node):
                 left_on, right_on = self.read_ir_sensors()
                 if not left_on and not right_on: # Both OFF line (LOW)
                     if not self.initial_line_found: self.get_logger().info("Searching initial line (RIGHT)..."); self.move_robot(0.0, LOST_LINE_ROTATE_SPEED)
-                    else: # Line lost, BIASED search
-                        self.get_logger().debug("Line lost, biased search...")
-                        now = time.time()
-                        # --- Biased Search Logic (2:1 Right:Left) ---
-                        if int(now) % 3 != 2: self.get_logger().debug("...biased search: RIGHT"); self.move_robot(0.0, LOST_LINE_ROTATE_SPEED)  # Turn Right
-                        else:                 self.get_logger().debug("...biased search: LEFT"); self.move_robot(0.0, -LOST_LINE_ROTATE_SPEED) # Turn Left
+                    else: # Line lost, simple right turn
+                        self.get_logger().debug("Line lost, turning right..."); self.move_robot(0.0, LOST_LINE_ROTATE_SPEED)
                 else: # At least one sensor ON line (HIGH)
                     if not self.initial_line_found: self.get_logger().info("Initial line found!"); self.initial_line_found = True
                     # Normal Line Following (HIGH=ON)
                     if left_on and right_on: self.move_robot(BASE_DRIVE_SPEED, 0.0) # -> Straight
-                    if not left_on and right_on: self.move_robot(BASE_DRIVE_SPEED*TURN_FACTOR, BASE_ROTATE_SPEED) # -> Turn Right
+                    elif left_on and not right_on: self.move_robot(BASE_DRIVE_SPEED*TURN_FACTOR, BASE_ROTATE_SPEED) # -> Turn Right
+                    elif not left_on and right_on: self.move_robot(BASE_DRIVE_SPEED*TURN_FACTOR, -BASE_ROTATE_SPEED) # -> Turn Left
 
             elif self.state == RobotState.ARRIVED_AT_STATION:
                 self.stop_moving()

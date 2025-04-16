@@ -295,8 +295,8 @@ class PancakeRobotNode(Node):
                     if not self.initial_line_found: self.get_logger().info("Initial line found!"); self.initial_line_found = True
                     # Normal Line Following (HIGH=ON)
                     if left_on and right_on: self.move_robot(BASE_DRIVE_SPEED, 0.0) # -> Straight
-                    elif left_on and not right_on: self.move_robot(BASE_DRIVE_SPEED*TURN_FACTOR, -BASE_ROTATE_SPEED) # -> Turn Left
-                    elif not left_on and right_on: self.move_robot(BASE_DRIVE_SPEED*TURN_FACTOR, BASE_ROTATE_SPEED) # -> Turn Right
+                    elif left_on and not right_on: self.move_robot(BASE_DRIVE_SPEED*TURN_FACTOR, BASE_ROTATE_SPEED) # -> Turn Right
+                    elif not left_on and right_on: self.move_robot(BASE_DRIVE_SPEED*TURN_FACTOR, -BASE_ROTATE_SPEED) # -> Turn Left
 
             elif self.state == RobotState.ARRIVED_AT_STATION:
                 self.stop_moving()

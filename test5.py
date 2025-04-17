@@ -593,24 +593,53 @@ class PancakeRobotNode(Node):
         # Cleanup GPIO
         self.cleanup_gpio()
 
-    # --- Calculate Skips Function ---
+        # --- Calculate Skips Function ---
+
     def calculate_skips_to_next_station(self):
         """
         Calculates how many physical stations need to be ignored (skipped).
-        This should be called AFTER current_sequence_index is incremented,
+        Sets self.target_station_index for the upcoming move.
+        This should be called AFTER current_sequence_index is potentially incremented,
         before entering MOVING_TO_STATION.
         Returns True on success, False on error.
         """
-        if self.current_sequence_index <= 0:
-            # First station, no skips needed from origin
-            self.skipped_stations_to_ignore = 0
+        # --- Handle the first move explicitly (index == 0) ---
+        if self.current_sequence_index == 0:
+            if not self.station_sequence:  # Safety check: Ensure sequence exists
+                self.get_logger().error(
+                    "Cannot calculate skips for first move: station_sequence is empty."
+                )
+                self.state = RobotState.ERROR
+                return False
+            # *** FIX: Set the target for the first move ***
+            self.target_station_index = self.station_sequence[0]
+            self.skipped_stations_to_ignore = 0  # No skips needed from origin
             self.green_patches_seen_since_last_stop = 0
-            self.get_logger().info("Moving to first station, no skips calculated.")
-            return True
+            self.get_logger().info(
+                f"Calculating for first move. Target: {self.target_station_index}, Skips: 0"
+            )
+            return True  # Proceed to MOVING_TO_STATION
 
-        if self.current_sequence_index >= len(self.station_sequence):
+        # --- Handle subsequent moves (index > 0) ---
+        # Validate index bounds *before* accessing sequence elements
+        if self.current_sequence_index < 0 or self.current_sequence_index >= len(
+            self.station_sequence
+        ):
+            # Log index and sequence length for debugging
+            seq_len = (
+                len(self.station_sequence)
+                if self.station_sequence is not None
+                else "None"
+            )
             self.get_logger().error(
-                "Cannot calculate skips: sequence index out of bounds."
+                f"Cannot calculate skips: sequence index {self.current_sequence_index} out of bounds for sequence length {seq_len}."
+            )
+            self.state = RobotState.ERROR
+            return False
+        # Also check if index-1 is valid
+        if self.current_sequence_index - 1 < 0:
+            self.get_logger().error(
+                f"Cannot calculate skips: invalid index {self.current_sequence_index} for determining last visited station."
             )
             self.state = RobotState.ERROR
             return False
@@ -621,6 +650,7 @@ class PancakeRobotNode(Node):
         ]
         # Get the physical index of the next target station
         target_station_idx = self.station_sequence[self.current_sequence_index]
+        # *** Set the target for subsequent moves ***
         self.target_station_index = target_station_idx  # Update the main target index
 
         try:
@@ -628,12 +658,13 @@ class PancakeRobotNode(Node):
             target_layout_pos = PHYSICAL_STATION_LAYOUT.index(target_station_idx)
         except ValueError:
             self.get_logger().error(
-                f"Invalid station index found during skip calculation: last={last_visited_station_idx}, target={target_station_idx}. Check PHYSICAL_STATION_LAYOUT."
+                f"Invalid station index found during skip calculation: last={last_visited_station_idx}, target={target_station_idx}. Check PHYSICAL_STATION_LAYOUT and sequence: {self.station_sequence}."
             )
             self.state = RobotState.ERROR
             return False
 
         skipped_count = 0
+        # Create the set *after* validation ensures station_sequence is okay
         planned_stations_set = set(self.station_sequence)  # For efficient lookup
 
         # Iterate through layout positions *between* last and target
@@ -657,7 +688,7 @@ class PancakeRobotNode(Node):
 
         if iteration_guard >= len(PHYSICAL_STATION_LAYOUT) * 2:
             self.get_logger().error(
-                "Loop detected or target not found during skipped station calculation. Check sequence and layout."
+                f"Loop detected or target layout position {target_layout_pos} not found during skipped station calculation. Last pos: {last_layout_pos}. Sequence: {self.station_sequence}. Layout: {PHYSICAL_STATION_LAYOUT}. Check logic."
             )
             self.state = RobotState.ERROR
             return False

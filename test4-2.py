@@ -814,7 +814,7 @@ class PancakeRobotNode(Node):
                             )
                             self.search_start_time = current_time
                             self.move_robot(
-                                0.0, LOST_LINE_ROTATE_SPEED
+                                0.0, -LOST_LINE_ROTATE_SPEED
                             )  # Start turning right
                         else:
                             # Continue existing search sweep
@@ -826,7 +826,7 @@ class PancakeRobotNode(Node):
                                     self.get_logger().debug(
                                         f"Searching RIGHT... ({elapsed_search_time:.1f}s / {RIGHT_SEARCH_DURATION_SEC}s)"
                                     )
-                                    self.move_robot(0.0, LOST_LINE_ROTATE_SPEED)
+                                    self.move_robot(0.0, -LOST_LINE_ROTATE_SPEED)
                                 else:
                                     # Right search time expired, switch to left search
                                     self.get_logger().warning(
@@ -840,7 +840,7 @@ class PancakeRobotNode(Node):
                                         current_time  # Reset timer for left sweep
                                     )
                                     self.move_robot(
-                                        0.0, -LOST_LINE_ROTATE_SPEED
+                                        0.0, LOST_LINE_ROTATE_SPEED
                                     )  # Start turning left
                             elif self.search_direction == "left":
                                 if elapsed_search_time < LEFT_SEARCH_DURATION_SEC:
@@ -848,7 +848,7 @@ class PancakeRobotNode(Node):
                                     self.get_logger().debug(
                                         f"Searching LEFT... ({elapsed_search_time:.1f}s / {LEFT_SEARCH_DURATION_SEC}s)"
                                     )
-                                    self.move_robot(0.0, -LOST_LINE_ROTATE_SPEED)
+                                    self.move_robot(0.0, LOST_LINE_ROTATE_SPEED)
                                 else:
                                     # Left search time expired, reset to try right again next cycle
                                     self.get_logger().warning(

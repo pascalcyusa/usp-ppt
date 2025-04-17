@@ -829,7 +829,7 @@ class PancakeRobotNode(Node):
                         for s in self.station_sequence
                     ):
                         self.get_logger().warning(
-                            f"Pickup status was not 0, but other steps required. Adding Pickup to sequence."
+                            "Pickup status was not 0, but other steps required. Adding Pickup to sequence."
                         )
                         self.station_sequence.append(
                             STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
@@ -951,11 +951,9 @@ class PancakeRobotNode(Node):
                         self.stop_moving()
                         return
 
-                    # --- Line Following & Recovery ---
+                        # --- Line Following & Recovery ---
                     if not left_on and not right_on:
                         # === Both OFF line ===
-                        # If we haven't found the line initially for this leg, turn to find it
-                        # If we had the line and lost it, also turn to find it.
                         # **Consistently turn RIGHT (negative angular_z) to search**
                         if not self.initial_line_found:
                             # self.get_logger().debug("Searching for initial line (turning RIGHT)...")
@@ -967,7 +965,10 @@ class PancakeRobotNode(Node):
                             # Optional sound for lost line
                             # self.play_sound([(330, 100)])
 
-                        self.move_robot(0.0, -LOST_LINE_ROTATE_SPEED)  # Turn Right
+                        # Command the right rotation (use NEGATIVE speed)
+                        self.move_robot(
+                            0.0, -LOST_LINE_ROTATE_SPEED
+                        )  # Turn Right (Negative)
 
                     else:
                         # === At least one sensor ON line ===
@@ -976,24 +977,24 @@ class PancakeRobotNode(Node):
                             # self.play_sound([(660, 100)]) # Optional sound
                             self.initial_line_found = True
 
-                        # --- Standard Line Following ---
+                        # --- Standard Line Following (Reverted to Original Signs) ---
                         if left_on and right_on:
                             # Both ON -> Drive straight
                             # self.get_logger().debug("Line Follow: Straight")
                             self.move_robot(BASE_DRIVE_SPEED, 0.0)
                         elif left_on and not right_on:
-                            # Left ON, Right OFF -> Robot drifted RIGHT -> Turn LEFT
+                            # Left ON, Right OFF -> Robot drifted RIGHT -> Turn LEFT to correct
                             # self.get_logger().debug("Line Follow: Correct Left")
                             self.move_robot(
                                 BASE_DRIVE_SPEED * TURN_FACTOR,  # Slightly slower
-                                BASE_ROTATE_SPEED,  # Turn Left (positive)
+                                -BASE_ROTATE_SPEED,  # <<<< REVERTED: Turn Left (Negative)
                             )
                         elif not left_on and right_on:
-                            # Left OFF, Right ON -> Robot drifted LEFT -> Turn RIGHT
+                            # Left OFF, Right ON -> Robot drifted LEFT -> Turn RIGHT to correct
                             # self.get_logger().debug("Line Follow: Correct Right")
                             self.move_robot(
                                 BASE_DRIVE_SPEED * TURN_FACTOR,  # Slightly slower
-                                -BASE_ROTATE_SPEED,  # Turn Right (negative)
+                                BASE_ROTATE_SPEED,  # <<<< REVERTED: Turn Right (Positive)
                             )
             # --- End of MOVING_TO_STATION ---
 

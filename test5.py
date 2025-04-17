@@ -120,7 +120,7 @@ SKIP_DETECTION_COOLDOWN_SEC = (
     0.5  # Time to ignore color detection after seeing a skipped station
 )
 STATION_WAIT_TIMEOUT_SEC = 120.0
-LEAVING_STATION_DURATION_SEC = 2.0  # Time to drive forward after completing a station
+LEAVING_STATION_DURATION_SEC = 3.0  # Time to drive forward after completing a station
 
 
 # --- Robot States ---

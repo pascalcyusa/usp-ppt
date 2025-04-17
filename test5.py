@@ -51,10 +51,14 @@ AIRTABLE_HEADERS = {
 AIRTABLE_ORDER_NAME_COLUMN = "Order Name"
 AIRTABLE_COOKING_1_STATUS_FIELD = "Cooking 1 Status"
 AIRTABLE_COOKING_2_STATUS_FIELD = "Cooking 2 Status"
-AIRTABLE_WHIPPED_CREAM_STATUS_FIELD = "Whipped Cream Status"
-AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD = "Choco Chips Status"
-AIRTABLE_SPRINKLES_STATUS_FIELD = "Sprinkles Status"
-AIRTABLE_PICKUP_STATUS_FIELD = "Pickup Status"
+AIRTABLE_WHIPPED_CREAM_STATUS_FIELD = (
+    "Whipped Cream Status"  # Assuming physical station 3
+)
+AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD = (
+    "Choco Chips Status"  # Assuming physical station 4
+)
+AIRTABLE_SPRINKLES_STATUS_FIELD = "Sprinkles Status"  # Assuming physical station 5
+AIRTABLE_PICKUP_STATUS_FIELD = "Pickup Status"  # Assuming physical station 0 (after 5)
 
 # --- Airtable Status Codes ---
 STATUS_WAITING = 0
@@ -62,15 +66,20 @@ STATUS_ARRIVED = 1
 STATUS_DONE = 99
 
 # --- Map Airtable Fields to Station Indices ---
+# IMPORTANT: These indices MUST match the physical layout encountered by the robot
 STATION_FIELD_TO_INDEX = {
     AIRTABLE_COOKING_1_STATUS_FIELD: 1,
     AIRTABLE_COOKING_2_STATUS_FIELD: 2,
-    AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: 3,
-    AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: 4,
+    AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: 3,
+    AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: 4,
     AIRTABLE_SPRINKLES_STATUS_FIELD: 5,
-    AIRTABLE_PICKUP_STATUS_FIELD: 0,
+    AIRTABLE_PICKUP_STATUS_FIELD: 0,  # Pickup is treated as index 0
 }
 STATION_INDEX_TO_FIELD = {v: k for k, v in STATION_FIELD_TO_INDEX.items()}
+
+# Define the physical order the robot encounters stations following the line
+# Adjust this list if the physical layout is different!
+PHYSICAL_STATION_LAYOUT = [1, 2, 3, 4, 5, 0]
 
 # --- Hardware Configuration ---
 LEFT_IR_PIN = 16
@@ -94,19 +103,24 @@ STATION_COLORS_HSV = {
         "hsv_upper": COMMON_HSV_UPPER,
         "color_bgr": COMMON_COLOR_BGR,
     }
-    for idx in STATION_FIELD_TO_INDEX.values()
+    # Ensure all stations in the layout have an entry, even if just for name lookup
+    for idx in PHYSICAL_STATION_LAYOUT  # Use physical layout for completeness
 }
 
 # --- Navigation & Control Parameters ---
 AIRTABLE_POLL_RATE = 2.0
-BASE_DRIVE_SPEED = 0.01  # m/s - Tune as needed
+BASE_DRIVE_SPEED = 0.01  # m/s - Tune as needed # <<< Adjusted Speed >>>
 BASE_ROTATE_SPEED = 0.2  # rad/s - Speed for *correction* turns (tune as needed)
 TURN_FACTOR = 0.7  # Speed multiplier during correction turns
 LOST_LINE_ROTATE_SPEED = 0.15  # rad/s - Speed for *search* rotation (tune as needed) - USE NEGATIVE FOR RIGHT TURN
 COLOR_DETECTION_THRESHOLD = 2000
-COLOR_COOLDOWN_SEC = 5.0
+COLOR_COOLDOWN_SEC = 3.0  # Cooldown *after successful arrival*
+# Cooldown after *ignoring* a skipped station should be shorter or handled differently
+SKIP_DETECTION_COOLDOWN_SEC = (
+    0.5  # Time to ignore color detection after seeing a skipped station
+)
 STATION_WAIT_TIMEOUT_SEC = 120.0
-LEAVING_STATION_DURATION_SEC = 2.0
+LEAVING_STATION_DURATION_SEC = 2.0  # Time to drive forward after completing a station
 
 
 # --- Robot States ---
@@ -114,6 +128,7 @@ class RobotState(Enum):
     IDLE = auto()
     FETCHING_ORDER = auto()
     PLANNING_ROUTE = auto()
+    CALCULATING_SKIPS = auto()  # New state/step
     LEAVING_STATION = auto()
     MOVING_TO_STATION = auto()
     ARRIVED_AT_STATION = auto()
@@ -135,12 +150,12 @@ class PancakeRobotNode(Node):
         # Initialize attributes...
         self.state = RobotState.IDLE
         self.current_order = None
-        self.station_sequence = []
-        self.current_sequence_index = -1
-        self.target_station_index = -1
-        self.last_color_detection_times = {
-            idx: 0.0 for idx in STATION_COLORS_HSV.keys()
-        }
+        self.station_sequence = []  # The sequence of stations to *visit*
+        self.current_sequence_index = -1  # Index within self.station_sequence
+        self.target_station_index = (
+            -1
+        )  # The *physical* index of the station we are currently heading towards
+        self.last_color_detection_time = 0.0  # Single cooldown timer
         self.wait_start_time = 0.0
         self.leaving_station_start_time = 0.0
         self._last_airtable_check_time = 0.0
@@ -151,6 +166,14 @@ class PancakeRobotNode(Node):
         self.audio_publisher = None
         self.drive_client = None
         self.rotate_client = None
+
+        # --- New attributes for skipping logic ---
+        self.skipped_stations_to_ignore = (
+            0  # How many green patches to ignore before the target
+        )
+        self.green_patches_seen_since_last_stop = 0  # Counter for patches seen
+        self.ignore_color_until = 0.0  # Timestamp until which color detections should be ignored (after seeing a skipped station)
+
         # Run initializations
         self._init_hardware()
         if self.state in [RobotState.GPIO_ERROR, RobotState.CAMERA_ERROR]:
@@ -184,11 +207,14 @@ class PancakeRobotNode(Node):
                 main={"size": CAMERA_RESOLUTION}, transform=CAMERA_TRANSFORM
             )
             self.picam2.configure(config)
+            # Use fixed focus; continuous can be slow/unreliable for this
             self.picam2.set_controls(
-                {"AfMode": controls.AfModeEnum.Continuous, "LensPosition": 0.0}
+                {"AfMode": controls.AfModeEnum.Manual, "LensPosition": 0.0}
             )
+            # Reduce exposure time if possible to minimize motion blur
+            # self.picam2.set_controls({"ExposureTime": 10000}) # Example: 10ms, adjust as needed
             self.picam2.start()
-            time.sleep(2)
+            time.sleep(2)  # Allow camera to stabilize
             self.get_logger().info("Camera ok.")
             if self.debug_windows:
                 cv2.namedWindow("Camera Feed")
@@ -209,17 +235,21 @@ class PancakeRobotNode(Node):
             self.rotate_client = ActionClient(self, RotateAngle, "/rotate_angle")
             if not self.audio_publisher or not self.cmd_vel_pub:
                 raise RuntimeError("Publisher creation failed.")
-            self.get_logger().info("ROS2 ok.")  # Corrected log message placement
+            # Wait briefly for connections to establish
+            time.sleep(1.0)
+            self.get_logger().info("ROS2 ok.")
         except Exception as e:
             self.get_logger().error(f"FATAL: ROS2 init: {e}", exc_info=True)
             self.state = RobotState.ERROR
 
-    # --- Airtable Functions (Unchanged) ---
+    # --- Airtable Functions (Unchanged from previous version) ---
     def fetch_order_from_airtable(self):
         try:
             params = {
                 "maxRecords": 1,
-                "filterByFormula": f"AND({{{AIRTABLE_COOKING_1_STATUS_FIELD}}}=0, {{{AIRTABLE_PICKUP_STATUS_FIELD}}}=0)",
+                # Find orders where *at least* Cooking 1 OR Cooking 2 is WAITING,
+                # AND Pickup is WAITING (to avoid reprocessing completed orders)
+                "filterByFormula": f"AND(OR({{{AIRTABLE_COOKING_1_STATUS_FIELD}}}=0, {{{AIRTABLE_COOKING_2_STATUS_FIELD}}}=0), {{{AIRTABLE_PICKUP_STATUS_FIELD}}}=0)",
                 "sort[0][field]": AIRTABLE_ORDER_NAME_COLUMN,
                 "sort[0][direction]": "asc",
             }
@@ -246,7 +276,9 @@ class PancakeRobotNode(Node):
                 "record_id": record_id,
                 "order_name": order_name,
                 "station_status": {
-                    field: fields.get(field, 0)
+                    field: fields.get(
+                        field, STATUS_DONE
+                    )  # Default to DONE if field missing
                     for field in STATION_FIELD_TO_INDEX.keys()
                 },
             }
@@ -272,19 +304,20 @@ class PancakeRobotNode(Node):
         data = {"fields": {field: status}}
         url = f"{AIRTABLE_URL}/{record_id}"
         try:
-            requests.patch(
+            response = requests.patch(  # Use PATCH for updates
                 url=url, headers=AIRTABLE_HEADERS, json=data, timeout=10
-            ).raise_for_status()
-            self.get_logger().info(
-                f"Airtable: Updated {field} to {status}."
-            )  # Added log
+            )
+            response.raise_for_status()  # Check for HTTP errors
+            self.get_logger().info(f"Airtable: Updated {field} to {status}.")
             return True
         except requests.exceptions.Timeout:
             self.get_logger().error(f"Airtable update timed out for {field}.")
             self.state = RobotState.AIRTABLE_ERROR
             return False
         except requests.exceptions.RequestException as e:
-            self.get_logger().error(f"Airtable update error for {field}: {e}")
+            self.get_logger().error(
+                f"Airtable update error for {field}: {e} - Response: {e.response.text if e.response else 'No Response'}"
+            )
             self.state = RobotState.AIRTABLE_ERROR
             return False
         except Exception as e:
@@ -303,22 +336,23 @@ class PancakeRobotNode(Node):
             response = requests.get(url=url, headers=AIRTABLE_HEADERS, timeout=10)
             response.raise_for_status()
             data = response.json()
-            current_status = data.get("fields", {}).get(field)  # Added variable
+            current_status = data.get("fields", {}).get(field)
             self.get_logger().debug(
                 f"Airtable check {field}: Status is {current_status}"
-            )  # Added log
+            )
             return current_status == STATUS_DONE
         except requests.exceptions.Timeout:
             self.get_logger().warning(f"Airtable check timed out for {field}.")
-            return False
+            return False  # Don't set error state, just failed check
         except requests.exceptions.RequestException as e:
             self.get_logger().error(f"Airtable check error ({field}): {e}")
+            # Don't set error state immediately, maybe transient network issue
             return False
         except Exception as e:
             self.get_logger().error(
                 f"Airtable check unexpected error: {e}", exc_info=True
             )
-            return False
+            return False  # Don't set error state
 
     # --- Robot Movement and Sensors ---
     def move_robot(self, linear_x, angular_z):
@@ -332,12 +366,17 @@ class PancakeRobotNode(Node):
             ]
             or not self.cmd_vel_pub
         ):
+            # Ensure robot stops if in error state or publisher not ready
             twist = Twist()
             twist.linear.x = 0.0
             twist.angular.z = 0.0
             if self.cmd_vel_pub:
-                self.cmd_vel_pub.publish(twist)
-                return
+                try:
+                    self.cmd_vel_pub.publish(twist)
+                except Exception as e:
+                    self.get_logger().error(f"Error publishing stop Twist: {e}")
+            return
+
         twist = Twist()
         twist.linear.x = float(linear_x)
         twist.angular.z = float(angular_z)
@@ -346,9 +385,11 @@ class PancakeRobotNode(Node):
             self.cmd_vel_pub.publish(twist)
         except Exception as e:
             self.get_logger().error(f"Failed to publish Twist: {e}")
+            # Consider setting an error state if publish fails repeatedly
 
     def stop_moving(self):
         # self.get_logger().debug("Stopping movement...")
+        # Send stop command multiple times for robustness
         for _ in range(3):
             self.move_robot(0.0, 0.0)
             time.sleep(0.02)
@@ -359,88 +400,134 @@ class PancakeRobotNode(Node):
             left_val = GPIO.input(LEFT_IR_PIN)
             right_val = GPIO.input(RIGHT_IR_PIN)
             # self.get_logger().debug(f"IR Raw: L={left_val}, R={right_val}")
+            # Return True if the sensor value matches the 'ON LINE' signal level
             return (left_val == IR_LINE_DETECT_SIGNAL), (
                 right_val == IR_LINE_DETECT_SIGNAL
             )
         except Exception as e:
-            self.get_logger().error(f"IR sensor read error: {e}", exc_info=True)
-            self.state = RobotState.GPIO_ERROR  # Set error state on read failure
-            return False, False
+            # Check if it's RuntimeError due to GPIO cleanup already happening
+            if isinstance(e, RuntimeError) and "cannot determine voltage" in str(e):
+                self.get_logger().warning(
+                    f"Ignoring IR read error during shutdown: {e}"
+                )
+                return False, False  # Assume off line during shutdown
+            else:
+                self.get_logger().error(f"IR sensor read error: {e}", exc_info=True)
+                self.state = RobotState.GPIO_ERROR  # Set error state on read failure
+                return False, False
 
-    # --- Color Detection (Unchanged) ---
-    def check_for_station_color(self, frame, target_idx):
+    # --- Color Detection ---
+    def check_for_station_color(self, frame):
+        """
+        Checks for the common station color (green) in the frame.
+        Returns: (detected_flag, display_frame, mask_frame)
+        """
         detected_flag = False
-        display_frame = frame.copy()
-        mask_frame = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
+        display_frame = frame.copy()  # Work on a copy
+        mask_frame = np.zeros(
+            (frame.shape[0], frame.shape[1]), dtype=np.uint8
+        )  # Blank mask initially
+
+        # --- Add State and Target Info to Display ---
         cv2.putText(
             display_frame,
             f"State: {self.state.name}",
             (10, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
-            (0, 255, 0),
-            2,
+            (0, 255, 255),
+            1,
+            cv2.LINE_AA,
         )
-        if target_idx not in STATION_COLORS_HSV:
-            cv2.putText(
-                display_frame,
-                f"Target: Invalid ({target_idx})",
-                (10, 60),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 0, 255),
-                2,
-            )
-            return False, display_frame, mask_frame
-        color_info = STATION_COLORS_HSV[target_idx]
-        target_name = color_info["name"]
-        target_bgr = COMMON_COLOR_BGR
-        lower = np.array(COMMON_HSV_LOWER)
-        upper = np.array(COMMON_HSV_UPPER)
+        target_name = STATION_COLORS_HSV.get(self.target_station_index, {}).get(
+            "name", "None"
+        )
+        cv2.putText(
+            display_frame,
+            f"Target: {target_name} ({self.target_station_index})",
+            (10, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            display_frame,
+            f"Seen: {self.green_patches_seen_since_last_stop} / Ignore: {self.skipped_stations_to_ignore}",
+            (10, 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+        # --- Color Detection Logic ---
         try:
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            lower = np.array(COMMON_HSV_LOWER)
+            upper = np.array(COMMON_HSV_UPPER)
             mask = cv2.inRange(hsv, lower, upper)
-            mask_frame = mask
+
+            # Optional: Apply morphological operations to reduce noise
+            # kernel = np.ones((5,5),np.uint8)
+            # mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+            # mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+            mask_frame = mask  # Store the mask for display/debugging
             pixels = cv2.countNonZero(mask)
-            text = f"Target: {target_name} ({pixels} px)"
+
+            # Check if enough pixels are detected AND cooldown period has passed
+            now = time.time()
+
+            # Add pixel count to display
             cv2.putText(
                 display_frame,
-                text,
-                (10, 60),
+                f"Green Px: {pixels}",
+                (frame.shape[1] - 150, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
-                target_bgr,
-                2,
+                (0, 255, 0),
+                1,
+                cv2.LINE_AA,
             )
-            now = time.time()
-            last_detection = self.last_color_detection_times.get(
-                target_idx, 0.0
-            )  # Corrected variable name
-            if pixels > COLOR_DETECTION_THRESHOLD and (
-                now - last_detection > COLOR_COOLDOWN_SEC
+
+            # Check BOTH the general cooldown AND the short skip cooldown
+            if (
+                pixels > COLOR_DETECTION_THRESHOLD
+                and now > self.last_color_detection_time
+                and now > self.ignore_color_until
             ):
-                self.last_color_detection_times[target_idx] = now
+                # We detected *a* green patch and are allowed to process it
                 detected_flag = True
-                self.get_logger().info(
-                    f"Detected color for {target_name}!"
-                )  # Added log
-                cv2.putText(
-                    display_frame,
-                    "DETECTED!",
-                    (frame.shape[1] // 2 - 50, frame.shape[0] - 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 0, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-            return detected_flag, display_frame, mask_frame
+                # Don't log detection here, log it in the state machine where we decide if it's the target or skipped
+
         except cv2.error as e:
-            self.get_logger().error(f"OpenCV color error: {e}")
-            return False, display_frame, np.zeros_like(mask_frame)
+            self.get_logger().error(f"OpenCV error during color detection: {e}")
+            # Return current frame state without detection
+            return False, display_frame, mask_frame
         except Exception as e:
-            self.get_logger().error(f"Color detect error: {e}", exc_info=True)
-            return False, display_frame, np.zeros_like(mask_frame)
+            self.get_logger().error(
+                f"Unexpected error during color detection: {e}", exc_info=True
+            )
+            # Return current frame state without detection
+            return False, display_frame, mask_frame
+
+        # Add detection status visualization
+        if detected_flag:
+            cv2.putText(
+                display_frame,
+                "GREEN DETECTED",
+                (frame.shape[1] // 2 - 100, frame.shape[0] - 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 0, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+        return detected_flag, display_frame, mask_frame
 
     # --- Sound (Unchanged) ---
     def play_sound(self, notes):
@@ -455,315 +542,510 @@ class PancakeRobotNode(Node):
                 continue
             n = AudioNote()
             n.frequency = int(f)
-            n.max_runtime = Duration(sec=int(d / 1000), nanosec=int((d % 1000) * 1e6))
+            # Ensure duration is at least minimal
+            dur_sec = int(d / 1000)
+            dur_nsec = int((d % 1000) * 1e6)
+            if dur_sec == 0 and dur_nsec == 0:
+                dur_nsec = 1000  # Ensure non-zero duration if ms was < 1
+            n.max_runtime = Duration(sec=dur_sec, nanosec=dur_nsec)
             msg.notes.append(n)
             log_str.append(f"({f}Hz,{d}ms)")
+
         if not msg.notes:
-            self.get_logger().warning("No valid notes.")
+            self.get_logger().warning("No valid notes to play.")
             return
-        self.get_logger().info(
-            f"Playing Audio Sequence: {', '.join(log_str)}"
-        )  # Changed log level
+
+        self.get_logger().info(f"Playing Audio Sequence: {', '.join(log_str)}")
         try:
+            # Append override notes flag if needed by Create3 audio system
+            # msg.append = False # Or True depending on desired behavior
             self.audio_publisher.publish(msg)
-            # self.get_logger().debug("Audio published.") # Removed debug log
         except Exception as e:
             self.get_logger().error(f"Audio publish failed: {e}", exc_info=True)
 
     # --- Cleanup ---
     def cleanup_gpio(self):
-        self.get_logger().info("Cleaning up GPIO...")  # Added log
+        self.get_logger().info("Cleaning up GPIO...")
         try:
-            GPIO.cleanup()
-            self.get_logger().info("GPIO cleanup successful.")  # Added log
+            # Check if GPIO has been initialized before cleaning up
+            # Getting the mode will raise an exception if not set
+            current_mode = GPIO.getmode()
+            if current_mode is not None:
+                GPIO.cleanup()
+                self.get_logger().info("GPIO cleanup successful.")
+            else:
+                self.get_logger().info("GPIO was not initialized, skipping cleanup.")
         except Exception as e:
-            self.get_logger().error(f"GPIO cleanup error: {e}")
+            # Ignore specific errors that might occur if pins already cleaned up
+            if "eboard Directed Edge Detector" not in str(e):
+                self.get_logger().error(f"GPIO cleanup error: {e}")
 
     def cleanup_hardware(self):
-        self.get_logger().info("Cleaning up hardware...")  # Added log
+        self.get_logger().info("Cleaning up hardware...")
         # Stop Camera first
         if self.picam2:
             try:
-                self.get_logger().info("Stopping camera...")  # Added log
+                self.get_logger().info("Stopping camera...")
                 self.picam2.stop()
-                self.get_logger().info("Camera stopped.")  # Added log
+                self.get_logger().info("Camera stopped.")
             except Exception as e:
                 self.get_logger().error(f"Camera stop error: {e}")
         # Cleanup GPIO
         self.cleanup_gpio()
 
+    # --- Calculate Skips Function ---
+    def calculate_skips_to_next_station(self):
+        """
+        Calculates how many physical stations need to be ignored (skipped).
+        This should be called AFTER current_sequence_index is incremented,
+        before entering MOVING_TO_STATION.
+        Returns True on success, False on error.
+        """
+        if self.current_sequence_index <= 0:
+            # First station, no skips needed from origin
+            self.skipped_stations_to_ignore = 0
+            self.green_patches_seen_since_last_stop = 0
+            self.get_logger().info("Moving to first station, no skips calculated.")
+            return True
+
+        if self.current_sequence_index >= len(self.station_sequence):
+            self.get_logger().error(
+                "Cannot calculate skips: sequence index out of bounds."
+            )
+            self.state = RobotState.ERROR
+            return False
+
+        # Get the physical index of the station just completed
+        last_visited_station_idx = self.station_sequence[
+            self.current_sequence_index - 1
+        ]
+        # Get the physical index of the next target station
+        target_station_idx = self.station_sequence[self.current_sequence_index]
+        self.target_station_index = target_station_idx  # Update the main target index
+
+        try:
+            last_layout_pos = PHYSICAL_STATION_LAYOUT.index(last_visited_station_idx)
+            target_layout_pos = PHYSICAL_STATION_LAYOUT.index(target_station_idx)
+        except ValueError:
+            self.get_logger().error(
+                f"Invalid station index found during skip calculation: last={last_visited_station_idx}, target={target_station_idx}. Check PHYSICAL_STATION_LAYOUT."
+            )
+            self.state = RobotState.ERROR
+            return False
+
+        skipped_count = 0
+        planned_stations_set = set(self.station_sequence)  # For efficient lookup
+
+        # Iterate through layout positions *between* last and target
+        current_layout_pos = (last_layout_pos + 1) % len(PHYSICAL_STATION_LAYOUT)
+        iteration_guard = 0  # Prevent infinite loops
+
+        while (
+            current_layout_pos != target_layout_pos
+            and iteration_guard < len(PHYSICAL_STATION_LAYOUT) * 2
+        ):
+            station_idx_at_pos = PHYSICAL_STATION_LAYOUT[current_layout_pos]
+            # Check if this station *exists physically* but *is not in our planned route*
+            if station_idx_at_pos not in planned_stations_set:
+                skipped_count += 1
+                self.get_logger().debug(
+                    f"Counting physical station {station_idx_at_pos} at layout pos {current_layout_pos} as skipped."
+                )
+
+            current_layout_pos = (current_layout_pos + 1) % len(PHYSICAL_STATION_LAYOUT)
+            iteration_guard += 1
+
+        if iteration_guard >= len(PHYSICAL_STATION_LAYOUT) * 2:
+            self.get_logger().error(
+                "Loop detected or target not found during skipped station calculation. Check sequence and layout."
+            )
+            self.state = RobotState.ERROR
+            return False
+
+        self.skipped_stations_to_ignore = skipped_count
+        self.green_patches_seen_since_last_stop = 0  # Reset counter for the new leg
+        self.get_logger().info(
+            f"Calculated move: From {last_visited_station_idx} to {target_station_idx}. Need to ignore {self.skipped_stations_to_ignore} green patches."
+        )
+        return True
+
     # --- Main Control Loop ---
     def control_loop(self):
         """Main state machine and control logic for the robot."""
+        # --- Error State Check ---
+        # This check should be at the very beginning
         if self.state in [
             RobotState.ERROR,
             RobotState.CAMERA_ERROR,
             RobotState.GPIO_ERROR,
-            RobotState.AIRTABLE_ERROR,  # Added check
+            RobotState.AIRTABLE_ERROR,
         ]:
+            # If already stopping or stopped, just return to avoid repeated stop commands
+            # Add a small check for current velocity if possible, otherwise just stop once
+            # For simplicity, we just call stop_moving() which includes multiple publishes
             self.stop_moving()
-            return
+            # Optionally log the error state only once or periodically
+            # self.get_logger().error(f"Robot in error state: {self.state.name}. Halting.", throttle_duration_sec=5.0)
+            return  # Prevent further execution in error states
 
-        display_frame, mask_frame, color_detected = None, None, False
-        process_color = self.state == RobotState.MOVING_TO_STATION
+        # --- Camera Frame Acquisition ---
+        display_frame, mask_frame, raw_frame = None, None, None
+        color_detected_this_cycle = False  # Flag for this specific loop iteration
 
-        # Camera Handling
         if self.picam2 and self.state != RobotState.CAMERA_ERROR:
             try:
-                raw = self.picam2.capture_array()
-                _det = False  # Initialize detection flag
-                if self.target_station_index != -1:
-                    # Assign result of color check
-                    _det, display_frame, mask_frame = self.check_for_station_color(
-                        raw, self.target_station_index
-                    )
-                    # Only use the detection flag if in the correct state
-                    if process_color:
-                        color_detected = _det
-                else:  # If no target, prepare display frame
-                    display_frame = raw.copy()
-                    cv2.putText(
-                        display_frame,
-                        f"State: {self.state.name}",
-                        (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        (0, 255, 0),
-                        2,
-                    )
-                    cv2.putText(
-                        display_frame,
-                        "Target: None",
-                        (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        (255, 255, 255),
-                        2,
-                    )
-                    # Ensure mask_frame exists
-                    mask_frame = np.zeros((raw.shape[0], raw.shape[1]), dtype=np.uint8)
+                raw_frame = self.picam2.capture_array()
+                # Perform color check regardless of state for debugging display
+                color_detected_this_cycle, display_frame, mask_frame = (
+                    self.check_for_station_color(raw_frame)
+                )
 
             except Exception as e:
-                self.get_logger().error(f"Camera loop error: {e}", exc_info=True)
+                self.get_logger().error(
+                    f"Camera capture or processing error: {e}", exc_info=True
+                )
                 self.state = RobotState.CAMERA_ERROR
                 self.stop_moving()
-                return
+                return  # Exit loop on camera error
+        else:
+            # Handle case where camera isn't available but node is running
+            if self.state not in [
+                RobotState.IDLE,
+                RobotState.ALL_ORDERS_COMPLETE,
+            ]:  # Only error if camera needed
+                self.get_logger().error("Camera not available!")
+                # self.state = RobotState.CAMERA_ERROR # Set error state if camera required for current operation
+                # For now, allow IDLE without camera, but error otherwise?
 
-        # State Machine
+        # --- State Machine ---
         try:
+            current_state = self.state  # Store state at start of loop iteration
+
             # --- State: IDLE ---
-            if self.state == RobotState.IDLE:
+            if current_state == RobotState.IDLE:
                 self.stop_moving()
+                # Reset most state variables
                 self.current_order = None
                 self.station_sequence = []
                 self.current_sequence_index = -1
                 self.target_station_index = -1
                 self.initial_line_found = False
-                self.current_order = self.fetch_order_from_airtable()
-                if self.current_order:
-                    if self.state != RobotState.AIRTABLE_ERROR:
-                        self.get_logger().info(
-                            f"Order '{self.current_order['order_name']}' received."
-                        )
-                        self.state = RobotState.PLANNING_ROUTE
-                elif self.state != RobotState.AIRTABLE_ERROR:
-                    self.state = RobotState.ALL_ORDERS_COMPLETE
+                self.skipped_stations_to_ignore = 0
+                self.green_patches_seen_since_last_stop = 0
+                self.ignore_color_until = 0.0
+
+                # Check for new orders periodically
+                if (
+                    time.time() - self._last_airtable_check_time
+                    > AIRTABLE_POLL_RATE * 2
+                ):  # Check less often in idle
+                    self.get_logger().info("Idle: Checking for new orders...")
+                    self._last_airtable_check_time = time.time()
+                    self.current_order = self.fetch_order_from_airtable()
+                    if self.current_order:
+                        if (
+                            self.state != RobotState.AIRTABLE_ERROR
+                        ):  # Check if fetch failed
+                            self.get_logger().info(
+                                f"Order '{self.current_order['order_name']}' received."
+                            )
+                            self.state = RobotState.PLANNING_ROUTE
+                    elif self.state != RobotState.AIRTABLE_ERROR:
+                        # No orders found, remain IDLE until next check or transition to ALL_ORDERS_COMPLETE after a while
+                        # self.get_logger().info("Idle: No new orders found.")
+                        # Consider adding a timeout to enter ALL_ORDERS_COMPLETE state?
+                        pass  # Stay IDLE
 
             # --- State: PLANNING_ROUTE ---
-            elif self.state == RobotState.PLANNING_ROUTE:
+            elif current_state == RobotState.PLANNING_ROUTE:
                 if not self.current_order:
-                    self.get_logger().error("PLANNING: No order!")
-                    self.state = RobotState.IDLE
-                    return
-                self.station_sequence = []
-                status = self.current_order["station_status"]
-                # Build sequence (simplified logic - ensure Cook 1 is present if needed)
-                if status.get(AIRTABLE_COOKING_1_STATUS_FIELD) == STATUS_WAITING:
-                    self.station_sequence.append(
-                        STATION_FIELD_TO_INDEX[AIRTABLE_COOKING_1_STATUS_FIELD]
-                    )
-                # else: # This check was too strict, allow orders starting later if needed
-                # self.get_logger().error(f"Order '{self.current_order['order_name']}' must start with Cooking 1 Waiting.")
-                # self.state = RobotState.IDLE
-                # self.current_order = None
-                # return
-                if status.get(AIRTABLE_COOKING_2_STATUS_FIELD) == STATUS_WAITING:
-                    self.station_sequence.append(
-                        STATION_FIELD_TO_INDEX[AIRTABLE_COOKING_2_STATUS_FIELD]
-                    )
-                if status.get(AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD) == STATUS_WAITING:
-                    self.station_sequence.append(
-                        STATION_FIELD_TO_INDEX[AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD]
-                    )
-                if status.get(AIRTABLE_WHIPPED_CREAM_STATUS_FIELD) == STATUS_WAITING:
-                    self.station_sequence.append(
-                        STATION_FIELD_TO_INDEX[AIRTABLE_WHIPPED_CREAM_STATUS_FIELD]
-                    )
-                if status.get(AIRTABLE_SPRINKLES_STATUS_FIELD) == STATUS_WAITING:
-                    self.station_sequence.append(
-                        STATION_FIELD_TO_INDEX[AIRTABLE_SPRINKLES_STATUS_FIELD]
-                    )
-                self.station_sequence.append(
-                    STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
-                )  # Always add Pickup
-
-                if not self.station_sequence or self.station_sequence == [
-                    STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
-                ]:  # Check if only pickup is left initially
-                    # If only pickup is needed, maybe treat it as complete or handle differently?
-                    # For now, consider it potentially invalid or requiring at least one task before pickup.
                     self.get_logger().error(
-                        "Route plan only contains Pickup or is empty!"
+                        "PLANNING: No current_order found! Returning to IDLE."
                     )
                     self.state = RobotState.IDLE
-                    self.current_order = None
-                else:
-                    self.current_sequence_index = 0
-                    self.target_station_index = self.station_sequence[0]
-                    self.initial_line_found = False
-                    self.get_logger().info(
-                        f"Route: {self.station_sequence}. Next: {self.target_station_index}"
-                    )
-                    self.state = RobotState.MOVING_TO_STATION
-                    self.play_sound([(440, 100), (550, 100), (660, 100)])
-
-            # --- State: LEAVING_STATION ---
-            elif self.state == RobotState.LEAVING_STATION:
-                elapsed = time.time() - self.leaving_station_start_time
-                if elapsed < LEAVING_STATION_DURATION_SEC:
-                    self.move_robot(BASE_DRIVE_SPEED * 0.5, 0.0)  # Slow move forward
-                else:
-                    self.get_logger().info(
-                        f"Finished leaving. Moving to {self.target_station_index}."
-                    )
-                    self.stop_moving()
-                    self.initial_line_found = False  # Must find line again
-                    self.state = RobotState.MOVING_TO_STATION
-
-            # --- State: MOVING_TO_STATION ---
-            elif self.state == RobotState.MOVING_TO_STATION:
-                # Check arrival FIRST
-                if color_detected:
-                    self.get_logger().info(
-                        f"Color detected for station {self.target_station_index}. Arriving."
-                    )
-                    self.play_sound([(523, 100), (659, 150)])
-                    self.stop_moving()
-                    self.state = RobotState.ARRIVED_AT_STATION
                     return  # Exit loop for this cycle
 
-                # Check target validity
+                self.station_sequence = []
+                status = self.current_order["station_status"]
+
+                # Build sequence based on physical layout and required status
+                for station_idx in PHYSICAL_STATION_LAYOUT:
+                    field_name = STATION_INDEX_TO_FIELD.get(station_idx)
+                    if field_name and status.get(field_name) == STATUS_WAITING:
+                        self.station_sequence.append(station_idx)
+
+                # Ensure Pickup (0) is always last if it's needed
                 if (
-                    self.target_station_index == -1
-                    or self.current_sequence_index < 0  # Added check
-                    or self.current_sequence_index >= len(self.station_sequence)
+                    STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
+                    in self.station_sequence
                 ):
+                    if (
+                        self.station_sequence[-1]
+                        != STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
+                    ):
+                        self.station_sequence.remove(
+                            STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
+                        )
+                        self.station_sequence.append(
+                            STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
+                        )
+                else:
+                    # If pickup wasn't explicitly waiting=0, but other steps are, add it.
+                    # This assumes pickup is *always* required if any other step is.
+                    # Check if any non-pickup station is in the sequence
+                    if any(
+                        s != STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
+                        for s in self.station_sequence
+                    ):
+                        self.get_logger().warning(
+                            f"Pickup status was not 0, but other steps required. Adding Pickup to sequence."
+                        )
+                        self.station_sequence.append(
+                            STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
+                        )
+
+                if not self.station_sequence:
                     self.get_logger().error(
-                        f"MOVING: Invalid target ({self.target_station_index}) or index ({self.current_sequence_index}). Halting."
+                        f"Route planning resulted in empty sequence for order '{self.current_order['order_name']}'. Order might be already complete or invalid. Returning to IDLE."
+                    )
+                    # Potentially update Airtable to indicate an issue?
+                    self.state = RobotState.IDLE
+                    self.current_order = None  # Clear invalid order
+                else:
+                    # Successfully planned route
+                    self.current_sequence_index = 0
+                    # Calculate skips for the *first* leg (from origin)
+                    if not self.calculate_skips_to_next_station():
+                        # Error occurred during calculation, state set within function
+                        return
+                    self.initial_line_found = False  # Need to find line initially
+                    self.get_logger().info(
+                        f"Route Planned: {self.station_sequence}. Next Target: {self.target_station_index}. Skips Needed: {self.skipped_stations_to_ignore}"
+                    )
+                    self.state = RobotState.MOVING_TO_STATION
+                    self.play_sound(
+                        [(440, 100), (550, 100), (660, 100)]
+                    )  # Route planned sound
+
+            # --- State: LEAVING_STATION ---
+            # This state provides a fixed duration forward movement after completing a task
+            elif current_state == RobotState.LEAVING_STATION:
+                elapsed = time.time() - self.leaving_station_start_time
+                if elapsed < LEAVING_STATION_DURATION_SEC:
+                    # Move slowly forward to clear the station area
+                    self.move_robot(BASE_DRIVE_SPEED * 0.5, 0.0)
+                else:
+                    self.get_logger().info(
+                        f"Finished leaving station. Proceeding to calculate skips for next target: {self.target_station_index}."
                     )
                     self.stop_moving()
-                    self.state = RobotState.ERROR
+                    # Now calculate skips *before* moving
+                    self.state = RobotState.CALCULATING_SKIPS
+
+            # --- State: CALCULATING_SKIPS ---
+            # Intermediate step to ensure skips are calculated before moving
+            elif current_state == RobotState.CALCULATING_SKIPS:
+                if self.calculate_skips_to_next_station():
+                    self.get_logger().info(
+                        f"Skips calculated. Moving to station {self.target_station_index}."
+                    )
+                    self.initial_line_found = (
+                        False  # Reset line finding for the new leg
+                    )
+                    self.state = RobotState.MOVING_TO_STATION
+                else:
+                    # Error state was set within the function
+                    self.stop_moving()
                     return
 
-                # Read Sensors
-                left_on, right_on = self.read_ir_sensors()
+            # --- State: MOVING_TO_STATION ---
+            elif current_state == RobotState.MOVING_TO_STATION:
+                # --- Color Detection Check (Skip/Target Logic) ---
+                if color_detected_this_cycle:
+                    self.green_patches_seen_since_last_stop += 1
+                    now = time.time()
+                    self.get_logger().debug(
+                        f"Detected green patch #{self.green_patches_seen_since_last_stop}. Target: {self.target_station_index}. Need to ignore: {self.skipped_stations_to_ignore}."
+                    )
 
-                # --- Line Following & Recovery Logic ---
-                if not left_on and not right_on:  # === Both OFF line ===
-                    # **CORRECTED/MODIFIED: Always turn RIGHT when lost**
-                    # (Assuming negative angular velocity is RIGHT turn)
-                    if not self.initial_line_found:
+                    # --- Check if this is the TARGET or a SKIPPED station ---
+                    if (
+                        self.green_patches_seen_since_last_stop
+                        > self.skipped_stations_to_ignore
+                    ):
+                        # --- TARGET STATION REACHED ---
                         self.get_logger().info(
-                            "Searching for initial line (turning RIGHT)..."
+                            f"TARGET station {self.target_station_index} detected and reached!"
                         )
-                    else:  # Line lost after being found
-                        self.get_logger().warning(
-                            "Line lost! Turning RIGHT to search..."
-                        )
-                        self.play_sound([(330, 100)])  # Optional lost sound
+                        self.play_sound([(523, 100), (659, 150)])  # Arrival sound
+                        self.stop_moving()
+                        # Apply the longer cooldown after successful arrival
+                        self.last_color_detection_time = now + COLOR_COOLDOWN_SEC
+                        self.state = RobotState.ARRIVED_AT_STATION
+                        return  # Exit loop for this cycle to process arrival
 
-                    # Command the right rotation (use NEGATIVE speed)
-                    self.move_robot(0.0, -LOST_LINE_ROTATE_SPEED)
-
-                else:  # === At least one sensor ON line ===
-                    if not self.initial_line_found:
-                        self.get_logger().info("Initial line found!")
-                        self.play_sound([(660, 100)])  # Optional found sound
-                        self.initial_line_found = True
-
-                    # --- **CORRECTED** Normal Line Following (HIGH=ON) ---
-                    if left_on and right_on:
-                        # Both ON -> Drive straight
-                        # self.get_logger().debug("Line Follow: Straight")
-                        self.move_robot(BASE_DRIVE_SPEED, 0.0)
-                    elif left_on and not right_on:
-                        # Left ON, Right OFF -> Robot drifted RIGHT -> Turn LEFT to correct
-                        # self.get_logger().debug("Line Follow: Correct Left")
-                        self.move_robot(
-                            BASE_DRIVE_SPEED * TURN_FACTOR,
-                            -BASE_ROTATE_SPEED,  # Turn Left (Negative)
+                    else:
+                        # --- SKIPPED STATION SEEN ---
+                        self.get_logger().info(
+                            f"Ignoring detected green patch (Seen {self.green_patches_seen_since_last_stop}/{self.skipped_stations_to_ignore} needed). Continuing to target {self.target_station_index}."
                         )
-                    elif not left_on and right_on:
-                        # Left OFF, Right ON -> Robot drifted LEFT -> Turn RIGHT to correct
-                        # self.get_logger().debug("Line Follow: Correct Right")
-                        self.move_robot(
-                            BASE_DRIVE_SPEED * TURN_FACTOR,
-                            BASE_ROTATE_SPEED,  # Turn Right (Positive)
+                        # Apply a *short* cooldown to avoid re-detecting the same patch immediately
+                        self.ignore_color_until = now + SKIP_DETECTION_COOLDOWN_SEC
+                        # Optional: Play a subtle sound for skipped station?
+                        # self.play_sound([(220, 50)])
+                        # *** Continue driving - DO NOT change state ***
+                        pass  # Explicitly stay in MOVING_TO_STATION
+
+                # --- Line Following Logic (Only executes if color wasn't the target) ---
+                if (
+                    self.state == RobotState.MOVING_TO_STATION
+                ):  # Re-check state as it might have changed above
+                    # Check target validity (should be set correctly by planning/skip calc)
+                    if (
+                        self.target_station_index == -1
+                        or self.current_sequence_index < 0
+                        or self.current_sequence_index >= len(self.station_sequence)
+                    ):
+                        self.get_logger().error(
+                            f"MOVING: Invalid target ({self.target_station_index}) or sequence index ({self.current_sequence_index}). Halting."
                         )
+                        self.stop_moving()
+                        self.state = RobotState.ERROR
+                        return
+
+                    # Read IR Sensors
+                    left_on, right_on = self.read_ir_sensors()
+                    if self.state == RobotState.GPIO_ERROR:  # Check if read_ir failed
+                        self.get_logger().error("Halting due to GPIO read error.")
+                        self.stop_moving()
+                        return
+
+                    # --- Line Following & Recovery ---
+                    if not left_on and not right_on:
+                        # === Both OFF line ===
+                        # If we haven't found the line initially for this leg, turn to find it
+                        # If we had the line and lost it, also turn to find it.
+                        # **Consistently turn RIGHT (negative angular_z) to search**
+                        if not self.initial_line_found:
+                            # self.get_logger().debug("Searching for initial line (turning RIGHT)...")
+                            pass  # Avoid flooding logs
+                        else:
+                            self.get_logger().warning(
+                                "Line lost! Turning RIGHT to search..."
+                            )
+                            # Optional sound for lost line
+                            # self.play_sound([(330, 100)])
+
+                        self.move_robot(0.0, -LOST_LINE_ROTATE_SPEED)  # Turn Right
+
+                    else:
+                        # === At least one sensor ON line ===
+                        if not self.initial_line_found:
+                            self.get_logger().info("Initial line found for this leg!")
+                            # self.play_sound([(660, 100)]) # Optional sound
+                            self.initial_line_found = True
+
+                        # --- Standard Line Following ---
+                        if left_on and right_on:
+                            # Both ON -> Drive straight
+                            # self.get_logger().debug("Line Follow: Straight")
+                            self.move_robot(BASE_DRIVE_SPEED, 0.0)
+                        elif left_on and not right_on:
+                            # Left ON, Right OFF -> Robot drifted RIGHT -> Turn LEFT
+                            # self.get_logger().debug("Line Follow: Correct Left")
+                            self.move_robot(
+                                BASE_DRIVE_SPEED * TURN_FACTOR,  # Slightly slower
+                                BASE_ROTATE_SPEED,  # Turn Left (positive)
+                            )
+                        elif not left_on and right_on:
+                            # Left OFF, Right ON -> Robot drifted LEFT -> Turn RIGHT
+                            # self.get_logger().debug("Line Follow: Correct Right")
+                            self.move_robot(
+                                BASE_DRIVE_SPEED * TURN_FACTOR,  # Slightly slower
+                                -BASE_ROTATE_SPEED,  # Turn Right (negative)
+                            )
             # --- End of MOVING_TO_STATION ---
 
             # --- State: ARRIVED_AT_STATION ---
-            elif self.state == RobotState.ARRIVED_AT_STATION:
-                self.stop_moving()
+            elif current_state == RobotState.ARRIVED_AT_STATION:
+                # Already stopped in MOVING state
+                # self.stop_moving() # Ensure stopped
+
+                # Validate sequence index and target
                 if (
                     self.current_sequence_index < 0
                     or self.current_sequence_index >= len(self.station_sequence)
                 ):
                     self.get_logger().error(
-                        f"ARRIVED: Invalid index {self.current_sequence_index}. Halting."
+                        f"ARRIVED: Invalid sequence index {self.current_sequence_index}. Halting."
                     )
                     self.state = RobotState.ERROR
                     return
                 idx = self.station_sequence[self.current_sequence_index]
-                if idx not in STATION_INDEX_TO_FIELD:
+                if idx != self.target_station_index:
                     self.get_logger().error(
-                        f"ARRIVED: No field for index {idx}. Halting."
+                        f"ARRIVED: Mismatch between sequence index {self.current_sequence_index} (station {idx}) and target_station_index ({self.target_station_index}). Halting."
                     )
                     self.state = RobotState.ERROR
                     return
-                field = STATION_INDEX_TO_FIELD[idx]
+
+                field = STATION_INDEX_TO_FIELD.get(idx)
+                if not field:
+                    self.get_logger().error(
+                        f"ARRIVED: No Airtable field name found for station index {idx}. Halting."
+                    )
+                    self.state = RobotState.ERROR
+                    return
+
                 self.get_logger().info(
                     f"Arrived at Station {idx} ({field}). Updating status to ARRIVED."
-                )  # Added log
+                )
+                # Update Airtable status
                 if self.update_station_status(
                     self.current_order["record_id"], field, STATUS_ARRIVED
                 ):
+                    # Successfully updated status, now wait for completion
                     self.wait_start_time = time.time()
+                    self._last_airtable_check_time = (
+                        0  # Reset check timer for immediate check
+                    )
                     self.state = RobotState.WAITING_FOR_STATION_COMPLETION
-                    self.get_logger().info(f"At {field}. Waiting for DONE.")
+                    self.get_logger().info(
+                        f"Waiting for station {idx} ({field}) to be marked DONE."
+                    )
                     self.play_sound([(440, 100), (440, 100)])  # Waiting sound
-                # else: update_station_status already set state to AIRTABLE_ERROR
+                else:
+                    # update_station_status already set state to AIRTABLE_ERROR
+                    self.get_logger().error(
+                        f"Failed to update Airtable status for {field}. Halting."
+                    )
+                    # State should already be AIRTABLE_ERROR
+                    self.stop_moving()
+                    return
 
             # --- State: WAITING_FOR_STATION_COMPLETION ---
-            elif self.state == RobotState.WAITING_FOR_STATION_COMPLETION:
+            elif current_state == RobotState.WAITING_FOR_STATION_COMPLETION:
+                # Check for timeout
                 elapsed = time.time() - self.wait_start_time
                 if elapsed > STATION_WAIT_TIMEOUT_SEC:
                     self.get_logger().warning(
-                        f"WAIT TIMEOUT ({elapsed:.1f}s > {STATION_WAIT_TIMEOUT_SEC}s) for station {self.target_station_index}. Aborting."  # Clarified log
+                        f"WAIT TIMEOUT ({elapsed:.1f}s > {STATION_WAIT_TIMEOUT_SEC}s) for station {self.target_station_index}. Aborting order."
                     )
-                    self.play_sound([(330, 500), (220, 500)])
+                    self.play_sound([(330, 500), (220, 500)])  # Timeout sound
                     self.state = RobotState.STATION_TIMED_OUT
-                    return
+                    return  # Exit loop
+
                 # Check Airtable periodically
                 if time.time() - self._last_airtable_check_time >= AIRTABLE_POLL_RATE:
                     self._last_airtable_check_time = time.time()
-                    # Validate index before proceeding
+
+                    # Validate index before checking Airtable
                     if (
                         self.current_sequence_index < 0
                         or self.current_sequence_index >= len(self.station_sequence)
                     ):
                         self.get_logger().error(
-                            f"WAITING: Invalid index {self.current_sequence_index}. Halting."
+                            f"WAITING: Invalid sequence index {self.current_sequence_index}. Halting."
                         )
                         self.state = RobotState.ERROR
                         return
@@ -771,106 +1053,116 @@ class PancakeRobotNode(Node):
                     field = STATION_INDEX_TO_FIELD.get(idx)
                     if not field:
                         self.get_logger().error(
-                            f"WAITING: No field for index {idx}. Halting."
+                            f"WAITING: No field name for index {idx}. Halting."
                         )
                         self.state = RobotState.ERROR
                         return
 
                     self.get_logger().debug(
-                        f"Checking Airtable if {field} is DONE..."
-                    )  # Added log
+                        f"Checking Airtable if {field} (Station {idx}) is DONE..."
+                    )
                     if self.wait_for_station_completion(
                         self.current_order["record_id"], field
                     ):
+                        # --- Station Completed ---
                         self.get_logger().info(
-                            f"Station {idx} ({field}) reported DONE."
+                            f"Station {idx} ({field}) reported DONE by Airtable."
                         )
-                        self.play_sound([(659, 150), (784, 200)])
+                        self.play_sound([(659, 150), (784, 200)])  # Success sound
+
+                        # Increment sequence index to move to the next station
                         self.current_sequence_index += 1
-                        # Check if order complete
+
+                        # --- Check if Order is Complete ---
                         if self.current_sequence_index >= len(self.station_sequence):
                             self.get_logger().info(
-                                "All stations complete for this order."
+                                "All stations for this order complete!"
                             )
                             self.state = RobotState.ORDER_COMPLETE
-                        else:  # Move to next station
-                            self.target_station_index = self.station_sequence[
+                        else:
+                            # --- Move to Next Station ---
+                            # Next target is determined by the new current_sequence_index
+                            next_target_idx = self.station_sequence[
                                 self.current_sequence_index
                             ]
                             self.get_logger().info(
-                                f"Leaving station {idx} before moving to next station: {self.target_station_index}."  # Clarified log
+                                f"Station {idx} done. Preparing to leave and move to next station: {next_target_idx}."
                             )
+                            # Start the leaving sequence
                             self.leaving_station_start_time = time.time()
                             self.state = RobotState.LEAVING_STATION
-                            # Reset color cooldown for the station we just left
-                            if idx in self.last_color_detection_times:
-                                self.last_color_detection_times[idx] = 0.0
+                            # Skip calculation will happen *after* leaving state
                     elif self.state == RobotState.AIRTABLE_ERROR:
+                        # wait_for_station_completion might set this on comms error
                         self.get_logger().error(
                             "Airtable error occurred during status check. Halting."
                         )
+                        self.stop_moving()
                     else:
+                        # Not done yet, continue waiting
                         self.get_logger().debug(
                             f"Station {field} not yet DONE. Continuing wait."
                         )
+                        pass  # Remain in WAITING_FOR_STATION_COMPLETION
 
             # --- State: ORDER_COMPLETE ---
-            elif self.state == RobotState.ORDER_COMPLETE:
+            elif current_state == RobotState.ORDER_COMPLETE:
                 order_name = (
                     self.current_order.get("order_name", "Unknown Order")
                     if self.current_order
                     else "Unknown Order"
-                )  # Safer access
-                self.get_logger().info(f"Order '{order_name}' successfully COMPLETE.")
-                self.play_sound([(784, 150), (880, 150), (1047, 250)])
+                )
+                self.get_logger().info(f"Order '{order_name}' successfully COMPLETED.")
+                self.play_sound(
+                    [(784, 150), (880, 150), (1047, 250)]
+                )  # Order complete fanfare
                 self.stop_moving()
-                # Reset for next order
-                self.current_order = None
-                self.station_sequence = []
-                self.current_sequence_index = -1
-                self.target_station_index = -1
-                self.initial_line_found = False
-                self.state = RobotState.IDLE
+                # Reset for next order search
+                self.current_order = None  # Clear completed order
+                self.state = RobotState.IDLE  # Go back to idle to look for more orders
+                # Reset timers and counters just in case
+                self._last_airtable_check_time = 0.0
+                # Add a small delay before checking for new orders immediately
+                time.sleep(1.0)
 
             # --- State: ALL_ORDERS_COMPLETE ---
-            elif self.state == RobotState.ALL_ORDERS_COMPLETE:
-                self.get_logger().info("No pending orders found. Waiting...")
-                self.play_sound([(440, 200), (440, 200)])
+            # This state might not be reached if IDLE keeps checking
+            elif current_state == RobotState.ALL_ORDERS_COMPLETE:
+                self.get_logger().info("No pending orders found. Entering idle sleep.")
+                self.play_sound([(440, 200), (440, 200)])  # Sleepy sound
                 self.stop_moving()
-                time.sleep(5.0)
-                self.state = RobotState.IDLE
+                time.sleep(5.0)  # Wait longer before checking again
+                self.state = RobotState.IDLE  # Go back to checking
 
             # --- State: STATION_TIMED_OUT ---
-            elif self.state == RobotState.STATION_TIMED_OUT:
+            elif current_state == RobotState.STATION_TIMED_OUT:
                 order_name = (
                     self.current_order.get("order_name", "Unknown Order")
                     if self.current_order
                     else "Unknown Order"
-                )  # Safer access
+                )
                 self.get_logger().error(
                     f"STATION TIMED OUT waiting for station {self.target_station_index}. Aborting order '{order_name}'."
                 )
                 self.stop_moving()
-                # Reset as if order failed
+                # TODO: Optionally update Airtable to indicate the timeout/failure?
+                # Reset as if order failed/aborted
                 self.current_order = None
-                self.station_sequence = []
-                self.current_sequence_index = -1
-                self.target_station_index = -1
-                self.initial_line_found = False
-                self.state = RobotState.IDLE
+                self.state = RobotState.IDLE  # Return to Idle after timeout
 
             # --- State: AIRTABLE_ERROR ---
-            elif self.state == RobotState.AIRTABLE_ERROR:
-                self.get_logger().error(
-                    "Persistent AIRTABLE ERROR detected. System halted."
-                )
-                self.play_sound([(330, 300), (330, 300), (330, 300)])
+            # This state is now entered via specific function calls failing
+            elif current_state == RobotState.AIRTABLE_ERROR:
+                # Logged when entering the state by the function that failed
+                # self.get_logger().error("Persistent AIRTABLE ERROR detected. System halted.")
+                self.play_sound([(330, 300), (330, 300), (330, 300)])  # Error sound
                 self.stop_moving()
+                # Stay in this state until resolved externally or restarted
 
         except Exception as e:
             self.get_logger().error(
-                f"State machine exception in state {self.state.name}: {e}",
-                exc_info=True,  # Added state name to log
+                f"CRITICAL: Unhandled exception in state machine ({current_state.name}): {e}",  # Log current state
+                exc_info=True,
             )
             self.state = RobotState.ERROR
             self.stop_moving()
@@ -879,8 +1171,24 @@ class PancakeRobotNode(Node):
         finally:
             if self.debug_windows:
                 try:
+                    # Use the potentially modified display_frame from color check
                     if display_frame is not None:
                         cv2.imshow("Camera Feed", display_frame)
+                    elif raw_frame is not None:  # Show raw if display_frame failed
+                        # Add state text to raw frame if possible
+                        cv2.putText(
+                            raw_frame,
+                            f"State: {self.state.name}",
+                            (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6,
+                            (0, 255, 255),
+                            1,
+                            cv2.LINE_AA,
+                        )
+                        cv2.imshow("Camera Feed", raw_frame)
+
+                    # Show the color mask
                     if mask_frame is not None:
                         # Convert single channel mask to BGR for display if needed
                         if len(mask_frame.shape) == 2:
@@ -888,71 +1196,101 @@ class PancakeRobotNode(Node):
                         else:
                             mask_display = mask_frame
                         cv2.imshow("Color Detection Mask", mask_display)
-                    else:  # Show blank if mask is None
+                    else:
+                        # Show blank mask if not generated
                         blank_mask = np.zeros(
                             (CAMERA_RESOLUTION[1], CAMERA_RESOLUTION[0], 3),
                             dtype=np.uint8,
                         )
+                        cv2.putText(
+                            blank_mask,
+                            "No Mask",
+                            (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            1,
+                            (128, 128, 128),
+                            2,
+                        )
                         cv2.imshow("Color Detection Mask", blank_mask)
 
+                    # Key press handling (non-blocking)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
-                        self.get_logger().info("Quit key ('q') pressed. Shutting down.")
-                        self.state = RobotState.ERROR
+                        self.get_logger().info(
+                            "Quit key ('q') pressed. Initiating shutdown."
+                        )
+                        self.state = RobotState.ERROR  # Trigger shutdown sequence
                         self.stop_moving()
+                        # Request ROS shutdown
                         if rclpy.ok():
-                            rclpy.try_shutdown()
+                            rclpy.try_shutdown()  # Graceful shutdown request
                 except Exception as e:
+                    # Prevent display errors from crashing the main loop
                     self.get_logger().error(
                         f"Display update error: {e}", exc_info=False
                     )
 
 
-# --- Main Function (Unchanged) ---
+# --- Main Function (Minimal Changes) ---
 def main(args=None):
+    print("Initializing ROS2...")
     rclpy.init(args=args)
     node = None
     executor = None
+    print("Creating PancakeRobotNode...")
     try:
         node = PancakeRobotNode()
+        # Check node state AFTER initialization attempt
         if node.state not in [
             RobotState.GPIO_ERROR,
             RobotState.CAMERA_ERROR,
             RobotState.ERROR,
-            RobotState.AIRTABLE_ERROR,  # Added check
+            RobotState.AIRTABLE_ERROR,
         ]:
+            print("Node initialized successfully. Creating executor...")
             executor = SingleThreadedExecutor()
             executor.add_node(node)
             node.get_logger().info("Starting ROS2 executor spin...")
-            executor.spin()
+            print("Spinning node... Press Ctrl+C to exit.")
+            executor.spin()  # Blocks until shutdown is called or Ctrl+C
+            print("Executor spin finished.")  # Will print after shutdown
         else:
+            # Node initialization failed
             node.get_logger().fatal(
-                f"Node init failed with state: {node.state.name}. Aborting."
-            )  # Added state name
-            if node:  # Ensure cleanup runs even if init fails
+                f"Node initialization failed with state: {node.state.name}. Aborting startup."
+            )
+            # Cleanup might still be needed if some parts initialized
+            if node:
+                print("Cleaning up hardware after failed initialization...")
                 node.cleanup_hardware()
                 if node.debug_windows:
+                    print("Closing OpenCV windows...")
                     cv2.destroyAllWindows()
+                    cv2.waitKey(1)  # Allow windows to close
 
     except KeyboardInterrupt:
-        print("KeyboardInterrupt received.")
+        print("\nKeyboardInterrupt received.")
         if node:
             node.get_logger().info("KeyboardInterrupt received, initiating shutdown...")
+            node.state = RobotState.ERROR  # Ensure loops exit and cleanup runs
+            node.stop_moving()  # Stop motion immediately
     except Exception as e:
-        print(f"FATAL Unhandled Error in main: {e}")
+        print(f"FATAL Unhandled Error in main execution: {e}")
         if node:
             node.get_logger().fatal(
                 f"FATAL Unhandled Error in main: {e}", exc_info=True
             )
-    finally:
-        print("Initiating final cleanup...")
-        if node:
-            node.get_logger().info("Stopping robot movement...")
+            node.state = RobotState.ERROR  # Ensure loops exit and cleanup runs
             node.stop_moving()
-            if executor:
-                node.get_logger().info("Shutting down ROS2 executor...")
-                executor.shutdown()
-                node.get_logger().info("Executor shutdown.")
+    finally:
+        print("Initiating final cleanup sequence...")
+        if executor:
+            print("Shutting down ROS2 executor...")
+            # executor.shutdown() # This might already be done if spin exited cleanly
+            print("Executor shutdown.")
+        if node:
+            node.get_logger().info("Ensuring robot is stopped...")
+            # node.stop_moving() # Called earlier, but ensure again
             node.get_logger().info("Cleaning up hardware resources...")
             node.cleanup_hardware()
             if node.debug_windows:
@@ -960,12 +1298,18 @@ def main(args=None):
                 cv2.destroyAllWindows()
                 cv2.waitKey(50)  # Short delay
             node.get_logger().info("Destroying ROS2 node...")
-            node.destroy_node()
+            if node.is_valid():  # Check if node still exists
+                node.destroy_node()
             node.get_logger().info("Node destroyed.")
+
+        # Shutdown ROS 2
         if rclpy.ok():
             print("Shutting down rclpy...")
             rclpy.shutdown()
             print("rclpy shutdown complete.")
+        else:
+            print("rclpy already shut down.")
+
         print("Shutdown sequence finished.")
 
 

@@ -902,7 +902,7 @@ class PancakeRobotNode(Node):
                 elapsed = time.time() - self.initial_departure_start_time
                 # Use a duration similar to LEAVING_STATION, or adjust as needed
                 departure_duration = (
-                    LEAVING_STATION_DURATION_SEC * 1.2
+                    LEAVING_STATION_DURATION_SEC * 2
                 )  # Slightly longer maybe?
 
                 if elapsed < departure_duration:

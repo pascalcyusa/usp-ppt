@@ -109,7 +109,7 @@ STATION_COLORS_HSV = {
 
 # --- Navigation & Control Parameters ---
 AIRTABLE_POLL_RATE = 2.0
-BASE_DRIVE_SPEED = 0.01  # m/s - Tune as needed # <<< Adjusted Speed >>>
+BASE_DRIVE_SPEED = 0.01  # m/s - Tune as needed
 BASE_ROTATE_SPEED = 0.2  # rad/s - Speed for *correction* turns (tune as needed)
 TURN_FACTOR = 0.7  # Speed multiplier during correction turns
 LOST_LINE_ROTATE_SPEED = 0.15  # rad/s - Speed for *search* rotation (tune as needed) - USE NEGATIVE FOR RIGHT TURN
@@ -126,9 +126,12 @@ LEAVING_STATION_DURATION_SEC = 2.0  # Time to drive forward after completing a s
 # --- Robot States ---
 class RobotState(Enum):
     IDLE = auto()
-    FETCHING_ORDER = auto()
+    FETCHING_ORDER = (
+        auto()
+    )  # Optional intermediate state, currently handled within IDLE
     PLANNING_ROUTE = auto()
-    CALCULATING_SKIPS = auto()  # New state/step
+    INITIAL_DEPARTURE = auto()  # New State: Move off pickup before starting next order
+    CALCULATING_SKIPS = auto()
     LEAVING_STATION = auto()
     MOVING_TO_STATION = auto()
     ARRIVED_AT_STATION = auto()
@@ -155,7 +158,7 @@ class PancakeRobotNode(Node):
         self.target_station_index = (
             -1
         )  # The *physical* index of the station we are currently heading towards
-        self.last_color_detection_time = 0.0  # Single cooldown timer
+        self.last_color_detection_time = 0.0  # Single cooldown timer after arrival
         self.wait_start_time = 0.0
         self.leaving_station_start_time = 0.0
         self._last_airtable_check_time = 0.0
@@ -167,12 +170,18 @@ class PancakeRobotNode(Node):
         self.drive_client = None
         self.rotate_client = None
 
-        # --- New attributes for skipping logic ---
+        # --- Attributes for skipping logic ---
         self.skipped_stations_to_ignore = (
             0  # How many green patches to ignore before the target
         )
         self.green_patches_seen_since_last_stop = 0  # Counter for patches seen
         self.ignore_color_until = 0.0  # Timestamp until which color detections should be ignored (after seeing a skipped station)
+
+        # --- Attributes for handling start after pickup ---
+        self.last_completed_station_index = (
+            -1
+        )  # Index of the station where the previous order finished
+        self.initial_departure_start_time = 0.0  # Timer for the INITIAL_DEPARTURE state
 
         # Run initializations
         self._init_hardware()
@@ -242,7 +251,7 @@ class PancakeRobotNode(Node):
             self.get_logger().error(f"FATAL: ROS2 init: {e}", exc_info=True)
             self.state = RobotState.ERROR
 
-    # --- Airtable Functions (Unchanged from previous version) ---
+    # --- Airtable Functions (Unchanged) ---
     def fetch_order_from_airtable(self):
         try:
             params = {
@@ -416,7 +425,7 @@ class PancakeRobotNode(Node):
                 self.state = RobotState.GPIO_ERROR  # Set error state on read failure
                 return False, False
 
-    # --- Color Detection ---
+    # --- Color Detection (Unchanged) ---
     def check_for_station_color(self, frame):
         """
         Checks for the common station color (green) in the frame.
@@ -593,8 +602,7 @@ class PancakeRobotNode(Node):
         # Cleanup GPIO
         self.cleanup_gpio()
 
-        # --- Calculate Skips Function ---
-
+    # --- Calculate Skips Function (Corrected) ---
     def calculate_skips_to_next_station(self):
         """
         Calculates how many physical stations need to be ignored (skipped).
@@ -618,7 +626,7 @@ class PancakeRobotNode(Node):
             self.get_logger().info(
                 f"Calculating for first move. Target: {self.target_station_index}, Skips: 0"
             )
-            return True  # Proceed to MOVING_TO_STATION
+            return True  # Proceed
 
         # --- Handle subsequent moves (index > 0) ---
         # Validate index bounds *before* accessing sequence elements
@@ -704,32 +712,39 @@ class PancakeRobotNode(Node):
     def control_loop(self):
         """Main state machine and control logic for the robot."""
         # --- Error State Check ---
-        # This check should be at the very beginning
         if self.state in [
             RobotState.ERROR,
             RobotState.CAMERA_ERROR,
             RobotState.GPIO_ERROR,
             RobotState.AIRTABLE_ERROR,
         ]:
-            # If already stopping or stopped, just return to avoid repeated stop commands
-            # Add a small check for current velocity if possible, otherwise just stop once
-            # For simplicity, we just call stop_moving() which includes multiple publishes
             self.stop_moving()
-            # Optionally log the error state only once or periodically
-            # self.get_logger().error(f"Robot in error state: {self.state.name}. Halting.", throttle_duration_sec=5.0)
             return  # Prevent further execution in error states
 
         # --- Camera Frame Acquisition ---
         display_frame, mask_frame, raw_frame = None, None, None
         color_detected_this_cycle = False  # Flag for this specific loop iteration
 
-        if self.picam2 and self.state != RobotState.CAMERA_ERROR:
+        # Process camera only if needed by current state or for debugging
+        process_camera = (
+            self.state in [RobotState.MOVING_TO_STATION, RobotState.INITIAL_DEPARTURE]
+            or self.debug_windows
+        )
+
+        if self.picam2 and self.state != RobotState.CAMERA_ERROR and process_camera:
             try:
                 raw_frame = self.picam2.capture_array()
-                # Perform color check regardless of state for debugging display
-                color_detected_this_cycle, display_frame, mask_frame = (
-                    self.check_for_station_color(raw_frame)
-                )
+                # Perform color check only if relevant (moving)
+                if self.state == RobotState.MOVING_TO_STATION:
+                    color_detected_this_cycle, display_frame, mask_frame = (
+                        self.check_for_station_color(raw_frame)
+                    )
+                elif (
+                    self.debug_windows
+                ):  # If debugging, prepare display frame even if not moving
+                    _, display_frame, mask_frame = self.check_for_station_color(
+                        raw_frame
+                    )  # Get frames for display
 
             except Exception as e:
                 self.get_logger().error(
@@ -738,15 +753,34 @@ class PancakeRobotNode(Node):
                 self.state = RobotState.CAMERA_ERROR
                 self.stop_moving()
                 return  # Exit loop on camera error
-        else:
-            # Handle case where camera isn't available but node is running
-            if self.state not in [
-                RobotState.IDLE,
-                RobotState.ALL_ORDERS_COMPLETE,
-            ]:  # Only error if camera needed
-                self.get_logger().error("Camera not available!")
-                # self.state = RobotState.CAMERA_ERROR # Set error state if camera required for current operation
-                # For now, allow IDLE without camera, but error otherwise?
+        elif self.debug_windows:
+            # Create blank frames if camera not processed but debug windows are on
+            display_frame = np.zeros(
+                (CAMERA_RESOLUTION[1], CAMERA_RESOLUTION[0], 3), dtype=np.uint8
+            )
+            mask_frame = np.zeros(
+                (CAMERA_RESOLUTION[1], CAMERA_RESOLUTION[0]), dtype=np.uint8
+            )
+            cv2.putText(
+                display_frame,
+                f"State: {self.state.name}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                display_frame,
+                "Camera Off/Idle",
+                (10, 50),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (128, 128, 128),
+                1,
+                cv2.LINE_AA,
+            )
 
         # --- State Machine ---
         try:
@@ -764,6 +798,7 @@ class PancakeRobotNode(Node):
                 self.skipped_stations_to_ignore = 0
                 self.green_patches_seen_since_last_stop = 0
                 self.ignore_color_until = 0.0
+                self.last_completed_station_index = -1  # <<< Reset Here
 
                 # Check for new orders periodically
                 if (
@@ -782,9 +817,10 @@ class PancakeRobotNode(Node):
                             )
                             self.state = RobotState.PLANNING_ROUTE
                     elif self.state != RobotState.AIRTABLE_ERROR:
-                        # No orders found, remain IDLE until next check or transition to ALL_ORDERS_COMPLETE after a while
-                        # self.get_logger().info("Idle: No new orders found.")
-                        # Consider adding a timeout to enter ALL_ORDERS_COMPLETE state?
+                        # No orders found, remain IDLE until next check
+                        self.get_logger().info(
+                            "Idle: No new orders found.", throttle_duration_sec=10.0
+                        )  # Throttle log
                         pass  # Stay IDLE
 
             # --- State: PLANNING_ROUTE ---
@@ -806,46 +842,31 @@ class PancakeRobotNode(Node):
                         self.station_sequence.append(station_idx)
 
                 # Ensure Pickup (0) is always last if it's needed
-                if (
-                    STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
-                    in self.station_sequence
-                ):
-                    if (
-                        self.station_sequence[-1]
-                        != STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
-                    ):
-                        self.station_sequence.remove(
-                            STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
-                        )
-                        self.station_sequence.append(
-                            STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
-                        )
+                pickup_idx = STATION_FIELD_TO_INDEX.get(
+                    AIRTABLE_PICKUP_STATUS_FIELD, -99
+                )
+                if pickup_idx in self.station_sequence:
+                    if self.station_sequence[-1] != pickup_idx:
+                        self.station_sequence.remove(pickup_idx)
+                        self.station_sequence.append(pickup_idx)
                 else:
-                    # If pickup wasn't explicitly waiting=0, but other steps are, add it.
-                    # This assumes pickup is *always* required if any other step is.
-                    # Check if any non-pickup station is in the sequence
-                    if any(
-                        s != STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
-                        for s in self.station_sequence
-                    ):
+                    # Add pickup if any other station is in the sequence (implicitly required)
+                    if any(s != pickup_idx for s in self.station_sequence):
                         self.get_logger().warning(
                             "Pickup status was not 0, but other steps required. Adding Pickup to sequence."
                         )
-                        self.station_sequence.append(
-                            STATION_FIELD_TO_INDEX[AIRTABLE_PICKUP_STATUS_FIELD]
-                        )
+                        self.station_sequence.append(pickup_idx)
 
                 if not self.station_sequence:
                     self.get_logger().error(
-                        f"Route planning resulted in empty sequence for order '{self.current_order['order_name']}'. Order might be already complete or invalid. Returning to IDLE."
+                        "Route planning resulted in empty sequence for order '{self.current_order['order_name']}'. Order might be already complete or invalid. Returning to IDLE."
                     )
-                    # Potentially update Airtable to indicate an issue?
                     self.state = RobotState.IDLE
                     self.current_order = None  # Clear invalid order
                 else:
                     # Successfully planned route
                     self.current_sequence_index = 0
-                    # Calculate skips for the *first* leg (from origin)
+                    # Calculate skips for the *first* leg (from origin/pickup)
                     if not self.calculate_skips_to_next_station():
                         # Error occurred during calculation, state set within function
                         return
@@ -853,10 +874,53 @@ class PancakeRobotNode(Node):
                     self.get_logger().info(
                         f"Route Planned: {self.station_sequence}. Next Target: {self.target_station_index}. Skips Needed: {self.skipped_stations_to_ignore}"
                     )
-                    self.state = RobotState.MOVING_TO_STATION
                     self.play_sound(
                         [(440, 100), (550, 100), (660, 100)]
                     )  # Route planned sound
+
+                    # *** Check if we just finished at Pickup ***
+                    if self.last_completed_station_index == pickup_idx:
+                        self.get_logger().info(
+                            f"Last order finished at Pickup ({pickup_idx}). Performing initial departure."
+                        )
+                        self.initial_departure_start_time = time.time()
+                        self.state = RobotState.INITIAL_DEPARTURE
+                        # Reset the flag now that we've used it
+                        self.last_completed_station_index = -1
+                    else:
+                        # Last order didn't finish at pickup (or it's the very first order)
+                        self.get_logger().info(
+                            "Starting move directly to first station."
+                        )
+                        self.state = RobotState.MOVING_TO_STATION
+                        # Reset the flag just in case it was set erroneously
+                        self.last_completed_station_index = -1
+
+            # --- State: INITIAL_DEPARTURE ---
+            # Move forward briefly after finishing at pickup before starting line following
+            elif current_state == RobotState.INITIAL_DEPARTURE:
+                elapsed = time.time() - self.initial_departure_start_time
+                # Use a duration similar to LEAVING_STATION, or adjust as needed
+                departure_duration = (
+                    LEAVING_STATION_DURATION_SEC * 1.2
+                )  # Slightly longer maybe?
+
+                if elapsed < departure_duration:
+                    # Move forward blindly (no line following or color check needed)
+                    # Use a moderate speed
+                    self.move_robot(BASE_DRIVE_SPEED * 0.7, 0.0)
+                else:
+                    # Departure complete
+                    self.get_logger().info(
+                        f"Initial departure complete ({elapsed:.1f}s). Stopping briefly and starting move to first station."
+                    )
+                    self.stop_moving()
+                    time.sleep(0.2)  # Brief pause after stopping
+                    # Now transition to normal movement
+                    self.initial_line_found = (
+                        False  # Must find the line again after the blind move
+                    )
+                    self.state = RobotState.MOVING_TO_STATION
 
             # --- State: LEAVING_STATION ---
             # This state provides a fixed duration forward movement after completing a task
@@ -867,7 +931,7 @@ class PancakeRobotNode(Node):
                     self.move_robot(BASE_DRIVE_SPEED * 0.5, 0.0)
                 else:
                     self.get_logger().info(
-                        f"Finished leaving station. Proceeding to calculate skips for next target: {self.target_station_index}."
+                        "Finished leaving station. Proceeding to calculate skips for next target."  # Target set in calc
                     )
                     self.stop_moving()
                     # Now calculate skips *before* moving
@@ -951,7 +1015,7 @@ class PancakeRobotNode(Node):
                         self.stop_moving()
                         return
 
-                        # --- Line Following & Recovery ---
+                    # --- Line Following & Recovery (Using Corrected Signs) ---
                     if not left_on and not right_on:
                         # === Both OFF line ===
                         # **Consistently turn RIGHT (negative angular_z) to search**
@@ -977,7 +1041,7 @@ class PancakeRobotNode(Node):
                             # self.play_sound([(660, 100)]) # Optional sound
                             self.initial_line_found = True
 
-                        # --- Standard Line Following (Reverted to Original Signs) ---
+                        # --- Standard Line Following ---
                         if left_on and right_on:
                             # Both ON -> Drive straight
                             # self.get_logger().debug("Line Follow: Straight")
@@ -987,22 +1051,20 @@ class PancakeRobotNode(Node):
                             # self.get_logger().debug("Line Follow: Correct Left")
                             self.move_robot(
                                 BASE_DRIVE_SPEED * TURN_FACTOR,  # Slightly slower
-                                -BASE_ROTATE_SPEED,  # <<<< REVERTED: Turn Left (Negative)
+                                -BASE_ROTATE_SPEED,  # Turn Left (Negative)
                             )
                         elif not left_on and right_on:
                             # Left OFF, Right ON -> Robot drifted LEFT -> Turn RIGHT to correct
                             # self.get_logger().debug("Line Follow: Correct Right")
                             self.move_robot(
                                 BASE_DRIVE_SPEED * TURN_FACTOR,  # Slightly slower
-                                BASE_ROTATE_SPEED,  # <<<< REVERTED: Turn Right (Positive)
+                                BASE_ROTATE_SPEED,  # Turn Right (Positive)
                             )
             # --- End of MOVING_TO_STATION ---
 
             # --- State: ARRIVED_AT_STATION ---
             elif current_state == RobotState.ARRIVED_AT_STATION:
                 # Already stopped in MOVING state
-                # self.stop_moving() # Ensure stopped
-
                 # Validate sequence index and target
                 if (
                     self.current_sequence_index < 0
@@ -1149,6 +1211,39 @@ class PancakeRobotNode(Node):
                     [(784, 150), (880, 150), (1047, 250)]
                 )  # Order complete fanfare
                 self.stop_moving()
+
+                # *** Store the index of the final station (Pickup) ***
+                pickup_station_index = STATION_FIELD_TO_INDEX.get(
+                    AIRTABLE_PICKUP_STATUS_FIELD, -99
+                )
+                if (
+                    self.station_sequence and self.current_sequence_index > 0
+                ):  # Check if sequence valid and index is past 0
+                    try:
+                        # The last station visited is at index - 1 relative to the incremented value
+                        completed_idx = self.station_sequence[
+                            self.current_sequence_index - 1
+                        ]
+                        self.last_completed_station_index = completed_idx
+                        self.get_logger().info(
+                            f"Order finished at station index: {self.last_completed_station_index}"
+                        )
+                        if completed_idx != pickup_station_index:
+                            self.get_logger().warning(
+                                f"Order completed, but last station ({completed_idx}) wasn't the expected pickup index ({pickup_station_index})."
+                            )
+                    except IndexError:
+                        self.get_logger().error(
+                            "Could not determine last completed station index in ORDER_COMPLETE (IndexError)."
+                        )
+                        self.last_completed_station_index = -1  # Reset if error
+                else:
+                    # If sequence empty or index is 0, we didn't really complete anything meaningful
+                    self.get_logger().error(
+                        "Could not determine last completed station index in ORDER_COMPLETE (Sequence/Index invalid)."
+                    )
+                    self.last_completed_station_index = -1  # Reset
+
                 # Reset for next order search
                 self.current_order = None  # Clear completed order
                 self.state = RobotState.IDLE  # Go back to idle to look for more orders
@@ -1158,7 +1253,7 @@ class PancakeRobotNode(Node):
                 time.sleep(1.0)
 
             # --- State: ALL_ORDERS_COMPLETE ---
-            # This state might not be reached if IDLE keeps checking
+            # This state might not be reached often if IDLE keeps checking
             elif current_state == RobotState.ALL_ORDERS_COMPLETE:
                 self.get_logger().info("No pending orders found. Entering idle sleep.")
                 self.play_sound([(440, 200), (440, 200)])  # Sleepy sound
@@ -1183,10 +1278,11 @@ class PancakeRobotNode(Node):
                 self.state = RobotState.IDLE  # Return to Idle after timeout
 
             # --- State: AIRTABLE_ERROR ---
-            # This state is now entered via specific function calls failing
+            # Entered via specific function calls failing
             elif current_state == RobotState.AIRTABLE_ERROR:
-                # Logged when entering the state by the function that failed
-                # self.get_logger().error("Persistent AIRTABLE ERROR detected. System halted.")
+                self.get_logger().error(
+                    "Persistent AIRTABLE ERROR detected. System halted."
+                )
                 self.play_sound([(330, 300), (330, 300), (330, 300)])  # Error sound
                 self.stop_moving()
                 # Stay in this state until resolved externally or restarted
@@ -1203,24 +1299,11 @@ class PancakeRobotNode(Node):
         finally:
             if self.debug_windows:
                 try:
-                    # Use the potentially modified display_frame from color check
+                    # Use the prepared display_frame (could be from camera or blank)
                     if display_frame is not None:
                         cv2.imshow("Camera Feed", display_frame)
-                    elif raw_frame is not None:  # Show raw if display_frame failed
-                        # Add state text to raw frame if possible
-                        cv2.putText(
-                            raw_frame,
-                            f"State: {self.state.name}",
-                            (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6,
-                            (0, 255, 255),
-                            1,
-                            cv2.LINE_AA,
-                        )
-                        cv2.imshow("Camera Feed", raw_frame)
 
-                    # Show the color mask
+                    # Show the color mask (could be from camera or blank)
                     if mask_frame is not None:
                         # Convert single channel mask to BGR for display if needed
                         if len(mask_frame.shape) == 2:

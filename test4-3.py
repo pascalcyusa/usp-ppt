@@ -757,7 +757,7 @@ class PancakeRobotNode(Node):
                         self.play_sound([(330, 100)])  # Lost line sound (optional)
 
                     # Command the right rotation
-                    self.move_robot(0.0, LOST_LINE_ROTATE_SPEED)
+                    self.move_robot(0.0, -LOST_LINE_ROTATE_SPEED)
                     # --- End Modification ---
 
                 # === CASE 2: At least one Sensor ON Line ===

@@ -733,14 +733,14 @@ class PancakeRobotNode(Node):
                         # self.get_logger().debug("Line Follow: Correct Left") # Less verbose debug
                         self.move_robot(
                             BASE_DRIVE_SPEED * TURN_FACTOR,
-                            BASE_ROTATE_SPEED,  # Turn Left (Positive from original code)
+                            -BASE_ROTATE_SPEED,  # Turn Left (Positive from original code)
                         )
                     elif not left_on and right_on:
                         # Left OFF, Right ON -> Robot drifted LEFT -> Turn RIGHT to correct
                         # self.get_logger().debug("Line Follow: Correct Right") # Less verbose debug
                         self.move_robot(
                             BASE_DRIVE_SPEED * TURN_FACTOR,
-                            -BASE_ROTATE_SPEED,  # Turn Right (Negative from original code)
+                            BASE_ROTATE_SPEED,  # Turn Right (Negative from original code)
                         )
             # --- End of MOVING_TO_STATION ---
 

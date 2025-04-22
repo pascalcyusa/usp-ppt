@@ -66,10 +66,10 @@ STATUS_DONE = 99  # Also used to indicate "SKIP" if encountered upon arrival
 STATION_FIELD_TO_INDEX = {
     AIRTABLE_COOKING_1_STATUS_FIELD: 1,
     AIRTABLE_COOKING_2_STATUS_FIELD: 2,
-    AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: 3,  # Assuming Choco Chips is physically after Cooking 2
-    AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: 4,  # Assuming Whipped Cream is after Choco Chips
-    AIRTABLE_SPRINKLES_STATUS_FIELD: 5,  # Assuming Sprinkles is after Whipped Cream
-    AIRTABLE_PICKUP_STATUS_FIELD: 0,  # Pickup is physically last, uses index 0 for color
+    AIRTABLE_WHIPPED_CREAM_STATUS_FIELD: 3,
+    AIRTABLE_CHOCOLATE_CHIPS_STATUS_FIELD: 4,
+    AIRTABLE_SPRINKLES_STATUS_FIELD: 5,
+    AIRTABLE_PICKUP_STATUS_FIELD: 0,
 }
 STATION_INDEX_TO_FIELD = {v: k for k, v in STATION_FIELD_TO_INDEX.items()}
 
@@ -120,7 +120,7 @@ COLOR_DETECTION_THRESHOLD = 2000
 COLOR_COOLDOWN_SEC = 5.0  # Cooldown *after successful arrival*
 STATION_WAIT_TIMEOUT_SEC = 120.0
 LEAVING_STATION_DURATION_SEC = (
-    2.0  # Time to drive forward after completing/skipping a station
+    4.0  # Time to drive forward after completing/skipping a station
 )
 
 

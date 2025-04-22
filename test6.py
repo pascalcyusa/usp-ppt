@@ -79,9 +79,9 @@ STATION_INDEX_TO_FIELD = {v: k for k, v in STATION_FIELD_TO_INDEX.items()}
 PHYSICAL_STATION_SEQUENCE_INDICES = [
     1,  # Cooking 1
     2,  # Cooking 2
-    3,  # Choco Chips
-    4,  # Whipped Cream
-    5,  # Sprinkles
+    3,  # Whipped Cream
+    4,  # Sprinkles
+    5,  # Choco Chips
     0,  # Pickup
 ]
 

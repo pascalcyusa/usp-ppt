@@ -118,7 +118,7 @@ TURN_FACTOR = 0.7  # Speed multiplier during correction turns - From original co
 LOST_LINE_ROTATE_SPEED = 0.15  # rad/s - Speed for *search* rotation - From original code (Negative used for Right turn)
 COLOR_DETECTION_THRESHOLD = 2000
 COLOR_COOLDOWN_SEC = 5.0  # Cooldown *after successful arrival*
-STATION_WAIT_TIMEOUT_SEC = 120.0
+STATION_WAIT_TIMEOUT_SEC = 200.0
 LEAVING_STATION_DURATION_SEC = (
     2.5  # Time to drive forward after completing/skipping a station
 )

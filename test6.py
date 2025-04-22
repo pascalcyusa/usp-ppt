@@ -120,7 +120,7 @@ COLOR_DETECTION_THRESHOLD = 2000
 COLOR_COOLDOWN_SEC = 5.0  # Cooldown *after successful arrival*
 STATION_WAIT_TIMEOUT_SEC = 120.0
 LEAVING_STATION_DURATION_SEC = (
-    2.79  # Time to drive forward after completing/skipping a station
+    2.0  # Time to drive forward after completing/skipping a station
 )
 
 
